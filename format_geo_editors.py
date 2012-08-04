@@ -115,8 +115,8 @@ def write_yaml(proj, rows, all_fields, tsv_name, outfile):
     meta['url'] = '/data/datasources/' + tsv_name
 
     timespan = {}
-    timespan['min'] = sorted(rows.keys())[0]
-    timespan['max'] = sorted(rows.keys())[-1]
+    timespan['start'] = sorted(rows.keys())[0]
+    timespan['end'] = sorted(rows.keys())[-1]
     timespan['step'] = '1mo'
     meta['timespan'] = timespan
 
