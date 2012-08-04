@@ -7,6 +7,7 @@ from functools import partial
 from nesting import Nest
 from operator import itemgetter
 import yaml
+import re
 
 root_logger = log.getLogger()
 ch = log.StreamHandler()
@@ -108,10 +109,10 @@ def write_yaml(proj, rows, all_fields, tsv_name, outfile):
 
     meta = {}
     meta['id'] = 'active_editors_' + proj
-    meta['name'] = 'Active ' + proj.title() + ' Editors'
-    meta['shortname'] = meta['name']
+    meta['name'] = 'Active ' + proj.upper() + ' Editors'
+    meta['shortName'] = meta['name']
     meta['format'] = 'csv'
-    meta['url'] = 'data/datasources/' + tsv_name
+    meta['url'] = '/data/datasources/' + tsv_name
 
     timespan = {}
     timespan['min'] = sorted(rows.keys())[0]
@@ -121,21 +122,27 @@ def write_yaml(proj, rows, all_fields, tsv_name, outfile):
 
     columns = {}
     columns['types'] = ['date'] + ['int' for key in all_fields]
-    columns['labels'] = all_fields
+    labels = ['Date'] + all_fields
+    clean_labels = []
+    for label in labels:
+        tmp = re.sub('\s', '_', label)
+        tmp = re.sub('[\(\)]', '', tmp)
+        clean_labels.append(tmp)
+    columns['labels'] = clean_labels
     meta['columns'] = columns
 
     meta['chart'] = {'chartType' : 'dygraphs'}
 
     fyaml = open(outfile + '_' + proj + '.yaml', 'w')
-    fyaml.write(yaml.dump(meta))
+    fyaml.write(yaml.safe_dump(meta, default_flow_style=False))
     fyaml.close()
 
 
 
 def write_datasource(proj, rows, outfile):
     log.debug('proj: %s,\tlen(rows): %s' % (proj, len(rows)))
-    tsv_name = outfile + '_' + proj + '.tsv'
-    tsv = open(tsv_name, 'w')
+    tsv_name = outfile + '_' + proj + '.csv'
+    csv = open(tsv_name, 'w')
 
     # normalize fields
     all_fields = sorted(reduce(set.__ior__, map(lambda row : set(row.keys()), rows.values()), set()))
@@ -143,14 +150,15 @@ def write_datasource(proj, rows, outfile):
 
     write_yaml(proj, rows, all_fields, tsv_name, outfile)
 
+    csv.write(','.join(['Date'] + all_fields) + '\n')
     for date, row in rows.items():
         #log.debug('date: %s,\trow: %s' % (date, row))
         log.debug('len(row): %d' % (len(row)))
         normalized_row = [row.get(key, 0) for key in all_fields]
-        line = '\t'.join(map(str,[date] + normalized_row)) + '\n'
+        line = ','.join(map(str,[date] + normalized_row)) + '\n'
         # log.debug('line: %s' % (line))
-        tsv.write(line)
-    tsv.close() 
+        csv.write(line)
+    csv.close() 
 
 def parse_args():
 
