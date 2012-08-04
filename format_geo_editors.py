@@ -110,7 +110,7 @@ def write_yaml(proj, rows, all_fields, tsv_name, outfile):
     meta = {}
     meta['id'] = 'active_editors_' + proj
     meta['name'] = 'Active ' + proj.upper() + ' Editors'
-    meta['shortName'] = meta['name']
+    meta['shortName'] = re.sub('\s', '', meta['name'])
     meta['format'] = 'csv'
     meta['url'] = '/data/datasources/' + tsv_name
 
