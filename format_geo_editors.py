@@ -87,7 +87,9 @@ def load_json_files(files):
         json_f = json.load(open(f, 'r'))
         json_all[get_date(f)][json_f['project']] = json_f['countries']
     # log.debug('f: %s' % (json.dumps(json_all, indent=2)))
+    # expand tree structure of dictionaries into row structure with named fields
     rows = dfs(json_all, [], ['date', 'project', 'country', 'cohort', 'count'])
+    # merge two fields together by concatenating field names
     country_cohort_merger = partial(merge_items, keys=['country','cohort'], new_key='country/cohort', fmt='%s (%s)')
     merged_country_cohort = map(country_cohort_merger, rows)
     #log.debug(json.dumps(merged_country_cohort, indent=2))
@@ -151,7 +153,10 @@ def write_datasource(proj, rows, outfile):
     write_yaml(proj, rows, all_fields, tsv_name, outfile)
 
     csv.write(','.join(['Date'] + all_fields) + '\n')
-    for date, row in rows.items():
+    sortable = [item for item in rows.items()]
+    by_date_asc = sorted(sortable)
+#    for date, row in rows.items():
+    for date, row in by_date_asc:
         #log.debug('date: %s,\trow: %s' % (date, row))
         log.debug('len(row): %d' % (len(row)))
         normalized_row = [row.get(key, 0) for key in all_fields]
