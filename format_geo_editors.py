@@ -8,6 +8,7 @@ from nesting import Nest
 from operator import itemgetter
 import yaml
 import re
+import os
 
 root_logger = log.getLogger()
 ch = log.StreamHandler()
@@ -103,18 +104,18 @@ def load_json_files(files):
     return counts_by_country_cohort_by_date_by_proj
 
 
-def write_datasources(json_all, outfile):
+def write_datasources(json_all, args):
     for proj, rows in json_all.items():
-        write_datasource(proj, rows, outfile)
+        write_datasource(proj, rows, args)
 
-def write_yaml(proj, rows, all_fields, tsv_name, outfile):
+def write_yaml(proj, rows, all_fields, csv_name, args):
 
     meta = {}
     meta['id'] = 'active_editors_' + proj
-    meta['name'] = 'Active ' + proj.upper() + ' Editors'
+    meta['name'] = proj.upper() + ' Editors'
     meta['shortName'] = meta['name']
     meta['format'] = 'csv'
-    meta['url'] = '/data/datafiles/' + tsv_name
+    meta['url'] = '/data/datafiles/' + csv_name
 
     timespan = {}
     timespan['start'] = sorted(rows.keys())[0]
@@ -135,30 +136,28 @@ def write_yaml(proj, rows, all_fields, tsv_name, outfile):
 
     meta['chart'] = {'chartType' : 'dygraphs'}
 
-    fyaml = open(outfile + '_' + proj + '.yaml', 'w')
+    fyaml = open(args.datasource_dir + os.sep + args.outfile + '_' + proj + '.yaml', 'w')
     fyaml.write(yaml.safe_dump(meta, default_flow_style=False))
     fyaml.close()
 
 
 
-def write_datasource(proj, rows, outfile):
+def write_datasource(proj, rows, args):
     log.debug('proj: %s,\tlen(rows): %s' % (proj, len(rows)))
-    tsv_name = outfile + '_' + proj + '.csv'
-    csv = open(tsv_name, 'w')
+    csv_name = args.outfile + '_' + proj + '.csv'
+    csv_path = args.datafile_dir + os.sep + csv_name
+    csv = open(csv_path, 'w')
 
     # normalize fields
     all_fields = sorted(reduce(set.__ior__, map(lambda row : set(row.keys()), rows.values()), set()))
-    log.debug('len(all_fields)=%d, all_fields:\n%s' % (len(all_fields), '\n'.join(sorted(all_fields))))
+    #log.debug('len(all_fields)=%d, all_fields:\n%s' % (len(all_fields), '\n'.join(sorted(all_fields))))
 
-    write_yaml(proj, rows, all_fields, tsv_name, outfile)
+    write_yaml(proj, rows, all_fields, csv_name, args)
 
     csv.write(','.join(['Date'] + all_fields) + '\n')
-    sortable = [item for item in rows.items()]
-    by_date_asc = sorted(sortable)
-#    for date, row in rows.items():
-    for date, row in by_date_asc:
+    for date, row in sorted([item for item in rows.items()]):
         #log.debug('date: %s,\trow: %s' % (date, row))
-        log.debug('len(row): %d' % (len(row)))
+        #log.debug('len(row): %d' % (len(row)))
         normalized_row = [row.get(key, 0) for key in all_fields]
         line = ','.join(map(str,[date] + normalized_row)) + '\n'
         # log.debug('line: %s' % (line))
@@ -168,14 +167,17 @@ def write_datasource(proj, rows, outfile):
 def parse_args():
 
     parser = argparse.ArgumentParser(description='Format a collection of json files output by editor-geocoding and creates a single csv in digraph format.')
-    parser.add_argument('files', metavar='GEOCODING_FILE.json', type=str, nargs='+', help='any number of appropriately named json files')
-    parser.add_argument('-o', '--outfile', dest='outfile', metavar='OUTFILE', type=str, default='geo_editors', nargs='?')
+    parser.add_argument('geo_files', metavar='GEOCODING_FILE.json', type=str, nargs='+', help='any number of appropriately named json files')
+    parser.add_argument('-s', '--datasources', dest='datasource_dir', metavar='DATASOURCE_DIR', type=str, default='./datasources', nargs='?', help='directory in which to place *.csv files for limn')
+    parser.add_argument('-f', '--datafiles', dest='datafile_dir', metavar='DATAFILE_DIR', type=str, default='./datafiles', nargs='?', help='direcotyr in which to place the *.yaml files for limn')
+    parser.add_argument('-o', '--outfile', dest='outfile', metavar='BASE_FILENAME', type=str, default='geo_editors', help='base file name for csv and yaml files.  for example: DATASOURCE_DIR/BAS_FILENAME_en.yaml')
 
     args = parser.parse_args()
-    log.info(args)
+    log.info(json.dumps(vars(args), indent=2))
     return args
 
 if __name__ == '__main__':
+    log.info('cwd: %s' % (os.getcwd()))
     args = parse_args()
-    json_all = load_json_files(args.files)
-    write_datasources(json_all, args.outfile)
+    json_all = load_json_files(args.geo_files)
+    write_datasources(json_all, args)
