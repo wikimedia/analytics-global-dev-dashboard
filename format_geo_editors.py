@@ -105,8 +105,11 @@ def load_json_files(files):
 
 
 def write_datasources(json_all, args):
+    fnames = {}
     for proj, rows in json_all.items():
-        write_datasource(proj, rows, args)
+        (csv_name, yaml_name) = write_datasource(proj, rows, args)
+        fnames[proj] = (csv_name, yaml_name)
+    return fnames
 
 def write_yaml(proj, rows, all_fields, csv_name, args):
 
@@ -136,10 +139,12 @@ def write_yaml(proj, rows, all_fields, csv_name, args):
 
     meta['chart'] = {'chartType' : 'dygraphs'}
 
-    fyaml = open(args.datasource_dir + os.sep + args.outfile + '_' + proj + '.yaml', 'w')
+    yaml_name = args.outfile + '_' + proj + '.yaml'
+    yaml_path = args.datasource_dir + os.sep + yaml_name
+    fyaml = open(yaml_path, 'w')
     fyaml.write(yaml.safe_dump(meta, default_flow_style=False))
     fyaml.close()
-
+    return yaml_path
 
 
 def write_datasource(proj, rows, args):
@@ -152,7 +157,7 @@ def write_datasource(proj, rows, args):
     all_fields = sorted(reduce(set.__ior__, map(lambda row : set(row.keys()), rows.values()), set()))
     #log.debug('len(all_fields)=%d, all_fields:\n%s' % (len(all_fields), '\n'.join(sorted(all_fields))))
 
-    write_yaml(proj, rows, all_fields, csv_name, args)
+    yaml_name = write_yaml(proj, rows, all_fields, csv_name, args)
 
     csv.write(','.join(['Date'] + all_fields) + '\n')
     for date, row in sorted([item for item in rows.items()]):
@@ -163,13 +168,74 @@ def write_datasource(proj, rows, args):
         # log.debug('line: %s' % (line))
         csv.write(line)
     csv.close() 
+    return (csv_name, yaml_name)
+
+
+def write_summary_graphs(json_all, args):
+    for proj, rows in json_all.items():
+        graph = {}
+        graph['options'] = {
+            "strokeWidth": 4,
+            "pointSize": 4,
+            "stackedGraph": true,
+            "digitsAfterDecimal": 0,
+            "drawPoints": true,
+            "axisLabelFontSize": 12,
+            "xlabel": "Date",
+            "ylabel": "# Active Editors (>5 Edits)"
+            }
+        graph["name"] = "Arabic WP Active Editors by Country (stacked graph)",
+        graph["notes"] = ""
+        graph["callout"] = {
+            "enabled": true,
+            "metric_idx": 0,
+            "label": ""
+            }
+        graph["slug"] = "ar_wp"
+        graph["width"] = "auto"
+        graph["parents"] = ["root"]
+        graph["result"] = "ok"
+        graph["id"] = "ar_wp"
+        graph["chartType"] = "dygraphs"
+        graph["height"] = 320
+        metrics = []
+        for i,  in enumerate(rows):
+            if i >= k:
+                break
+            metric = {}
+            metric["index"] = 1,
+            metric["scale"] = 1,
+            metric["timespan"]] = {
+            "start": null,
+            "step": null,
+            "end": null
+            },
+            metric["color"] = "#d53e4f",
+            metric["format_axis"] = null,
+            metric["label"] = "Algeria",
+            metric["disabled"] = false,
+            metric["visible"] = true,
+            metric["format_value"] = null,
+            metric["transforms"] = [],
+            metric["source_id"] = "active_editors_ar",
+            metric["chartType"] = null,
+            metric["type"] = "int",
+            metric["source_col"] = 5
+            metrics.append(metric)
+        data = {}
+        data["metrics"] = metrics
+        graph["data"] = data
+
+
+
 
 def parse_args():
 
     parser = argparse.ArgumentParser(description='Format a collection of json files output by editor-geocoding and creates a single csv in digraph format.')
     parser.add_argument('geo_files', metavar='GEOCODING_FILE.json', type=str, nargs='+', help='any number of appropriately named json files')
     parser.add_argument('-s', '--datasources', dest='datasource_dir', metavar='DATASOURCE_DIR', type=str, default='./datasources', nargs='?', help='directory in which to place *.csv files for limn')
-    parser.add_argument('-f', '--datafiles', dest='datafile_dir', metavar='DATAFILE_DIR', type=str, default='./datafiles', nargs='?', help='direcotyr in which to place the *.yaml files for limn')
+    parser.add_argument('-f', '--datafiles', dest='datafile_dir', metavar='DATAFILE_DIR', type=str, default='./datafiles', nargs='?', help='directory in which to place the *.yaml files for limn')
+    parser.add_argument('-g', '--graphs', dest='graphs_dir', metavar='GRAPHS_DIR', type=str, default='./graphs', nargs='?', help='directory in which to place the *.json which represent graph metadata')
     parser.add_argument('-o', '--outfile', dest='outfile', metavar='BASE_FILENAME', type=str, default='geo_editors', help='base file name for csv and yaml files.  for example: DATASOURCE_DIR/BAS_FILENAME_en.yaml')
 
     args = parser.parse_args()
@@ -180,4 +246,5 @@ if __name__ == '__main__':
     log.info('cwd: %s' % (os.getcwd()))
     args = parse_args()
     json_all = load_json_files(args.geo_files)
-    write_datasources(json_all, args)
+    fnames = write_datasources(json_all, args)
+    write_summary_graphs(json_all, fnames, args)
