@@ -2,11 +2,11 @@ import argparse
 import logging as log
 import json
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from functools import partial
 from nesting import Nest
 from operator import itemgetter
-import yaml
+import yaml, csv
 import re
 import os
 
@@ -16,6 +16,7 @@ formatter = log.Formatter('[%(levelname)s]\t[%(threadName)s]\t[%(funcName)s:%(li
 ch.setFormatter(formatter)
 root_logger.addHandler(ch)
 root_logger.setLevel(log.DEBUG)
+
 
 def get_date(fname):
     dstr = fname.split('_')[1]
@@ -28,43 +29,14 @@ def get_date(fname):
     limn_fmt = '%Y/%m/%d'
     return d.date().strftime(limn_fmt)
 
-
-def merge_elems(row, start=0, end=-1, fmt=None):
-    # log.debug('entering with start=%d, end=%d, fmt=%s', start, end, fmt)
-    # log.debug('init row: %s' % row)
-    # log.debug('to merge: %s' % (row[start:end]))
-    if not fmt:
-        row[start] = ''.join(row[start:end])
-    else:
-        row[start] = fmt % tuple(row[start:end])
-    del row[start+1:end]
-    # log.debug('final row: %s' % row)
-    return row
-
-def merge_items(row, keys=[], new_key=None, fmt=None):
-    # log.debug('entering with keys=%s, new_key=%s, fmt=%s', keys, new_key, fmt)
-    # log.debug('init row: %s' % row)
-    # log.debug('to merge: %s' % [row[k] for k in keys])
-    if not set(keys).issubset(set(row.keys())):
-        return row
-    if not fmt:
-        row[new_key] = reduce(lambda k1, k2: '%s:%s' % (k1,row[k2]), keys)
-    else:
-        row[new_key] = fmt % tuple([str(row[k]) for k in keys])
-    for k in keys:
-        del row[k]
-    # log.debug('final row: %s' % row)
-    return row
-
-
-def dfs(nest, path, keys=None):
+def flatten(nest, path=[], keys=[]):
     #log.debug('entering with type(nest):%s,\tpath: %s' % (type(nest), path))
     # try to use as dict
     try:
         #log.debug('trying to use as dict')
         for k, v in nest.items():
-            #log.debug('calling dfs(%s, %s)' % (k, v))
-            for row in dfs(v, path + [k], keys):
+            #log.debug('calling flatten(%s, %s)' % (k, v))
+            for row in flatten(v, path + [k], keys):
                 yield row
     except AttributeError:
         #log.debug('nest has not attribute \'items()\'')
@@ -72,7 +44,7 @@ def dfs(nest, path, keys=None):
         try:
             #log.debug('trying to use as list')
             for elem in nest:
-                for row in dfs(elem, path, keys):
+                for row in flatten(elem, path, keys):
                     yield row
         except TypeError:
             #log.debug('nest object of type %s is not iterable' % (type(nest)))
@@ -84,38 +56,29 @@ def dfs(nest, path, keys=None):
 
 def load_json_files(files):
     json_all = defaultdict(dict)
+    projects = []
     for f in files:
         json_f = json.load(open(f, 'r'))
+        projects.append(json_f['project'])
         json_all[get_date(f)][json_f['project']] = json_f['countries']
     # log.debug('f: %s' % (json.dumps(json_all, indent=2)))
-    # expand tree structure of dictionaries into row structure with named fields
-    rows = dfs(json_all, [], ['date', 'project', 'country', 'cohort', 'count'])
-    # merge two fields together by concatenating field names
-    country_cohort_merger = partial(merge_items, keys=['country','cohort'], new_key='country/cohort', fmt='%s (%s)')
-    merged_country_cohort = map(country_cohort_merger, rows)
-    #log.debug(json.dumps(merged_country_cohort, indent=2))
-    counts_by_country_cohort_by_date_by_proj = Nest()\
-        .key(itemgetter('project'))\
-        .key(itemgetter('date'))\
-        .key(itemgetter('country/cohort'))\
-        .rollup(lambda d: d[0]['count'])\
-        .map(merged_country_cohort)
-    #log.debug('counts_by_country_cohort_by_date_by_proj: %s' % (json.dumps(counts_by_country_cohort_by_date_by_proj, indent=2)))
-    return counts_by_country_cohort_by_date_by_proj
+    # expand tree structure of dictionaries into list of dicts with named fields
+    rows = list(flatten(json_all, [], ['date', 'project', 'country', 'cohort', 'count']))
+    for row in rows:
+        row['country-cohort'] = row['country'] + '-' + row['cohort']
+    by_date = Nest().key(itemgetter('date')).map(rows)
+    # everything is by date, so everyone wants things sorted
+    by_date = OrderedDict(sorted(by_date.items()))
+    #log.debug('rows: %s', rows)
+    log.debug('found projects: %s', projects)
+    return by_date, projects
 
 
-def write_datasources(json_all, args):
-    fnames = {}
-    for proj, rows in json_all.items():
-        (csv_name, yaml_name) = write_datasource(proj, rows, args)
-        fnames[proj] = (csv_name, yaml_name)
-    return fnames
-
-def write_yaml(proj, rows, all_fields, csv_name, args):
+def write_yaml(_id, name, fields, csv_name, rows, args):
 
     meta = {}
-    meta['id'] = 'active_editors_' + proj
-    meta['name'] = proj.upper() + ' Editors'
+    meta['id'] = _id
+    meta['name'] = name
     meta['shortName'] = meta['name']
     meta['format'] = 'csv'
     meta['url'] = '/data/datafiles/' + csv_name
@@ -139,36 +102,41 @@ def write_yaml(proj, rows, all_fields, csv_name, args):
 
     meta['chart'] = {'chartType' : 'dygraphs'}
 
-    yaml_name = args.outfile + '_' + proj + '.yaml'
-    yaml_path = args.datasource_dir + os.sep + yaml_name
+    yaml_name = args.basename + '_' + proj + '.yaml'
+    yaml_path = os.path.join(args.datasource_dir, yaml_name)
     fyaml = open(yaml_path, 'w')
     fyaml.write(yaml.safe_dump(meta, default_flow_style=False))
     fyaml.close()
     return yaml_path
 
 
-def write_datasource(proj, rows, args):
+def write_project_datasource(proj, rows, args):
     log.debug('proj: %s,\tlen(rows): %s' % (proj, len(rows)))
-    csv_name = args.outfile + '_' + proj + '.csv'
-    csv_path = args.datafile_dir + os.sep + csv_name
-    csv = open(csv_path, 'w')
+    csv_name = args.basename + '_' + proj + '.csv'
+    csv_path = os.path.join(args.datafile_dir, csv_name)
+    csv_file = open(csv_path, 'w')
+
+    # remove rows that don't interest us and then grab the row id (country-cohort) and count
+    csv_rows = []
+    for date, row_batch in rows.items():
+        filtered_batch = filter(lambda row : row['project'] == proj, row_batch)
+        csv_row = {'date' : date}
+        for row in filtered_batch:
+            csv_row[row['country-cohort']] = row['count']
+        csv_rows.append(csv_row)
 
     # normalize fields
-    all_fields = sorted(reduce(set.__ior__, map(lambda row : set(row.keys()), rows.values()), set()))
-    #log.debug('len(all_fields)=%d, all_fields:\n%s' % (len(all_fields), '\n'.join(sorted(all_fields))))
+    all_fields = sorted(reduce(set.__ior__, map(set,map(dict.keys, csv_rows)), set()))
 
-    yaml_name = write_yaml(proj, rows, all_fields, csv_name, args)
+    writer = csv.DictWriter(csv_file, all_fields, restval='', extrasaction='ignore')
+    writer.writeheader()
+    for csv_row in csv_rows:
+        writer.writerow(csv_row)
+    csv_file.close() 
 
-    csv.write(','.join(['Date'] + all_fields) + '\n')
-    for date, row in sorted([item for item in rows.items()]):
-        #log.debug('date: %s,\trow: %s' % (date, row))
-        #log.debug('len(row): %d' % (len(row)))
-        normalized_row = [row.get(key, 0) for key in all_fields]
-        line = ','.join(map(str,[date] + normalized_row)) + '\n'
-        # log.debug('line: %s' % (line))
-        csv.write(line)
-    csv.close() 
-    return (csv_name, yaml_name)
+    #yaml_name = write_yaml('%s Editors' % proj.Upper(), rows, all_fields, csv_name, args)
+    
+    #return (csv_name, yaml_name)
 
 
 def write_summary_graphs(json_all, args):
@@ -205,7 +173,7 @@ def write_summary_graphs(json_all, args):
             metric = {}
             metric["index"] = 1,
             metric["scale"] = 1,
-            metric["timespan"]] = {
+            metric["timespan"] = {
             "start": null,
             "step": null,
             "end": null
@@ -232,19 +200,51 @@ def write_summary_graphs(json_all, args):
 def parse_args():
 
     parser = argparse.ArgumentParser(description='Format a collection of json files output by editor-geocoding and creates a single csv in digraph format.')
-    parser.add_argument('geo_files', metavar='GEOCODING_FILE.json', type=str, nargs='+', help='any number of appropriately named json files')
-    parser.add_argument('-s', '--datasources', dest='datasource_dir', metavar='DATASOURCE_DIR', type=str, default='./datasources', nargs='?', help='directory in which to place *.csv files for limn')
-    parser.add_argument('-f', '--datafiles', dest='datafile_dir', metavar='DATAFILE_DIR', type=str, default='./datafiles', nargs='?', help='directory in which to place the *.yaml files for limn')
-    parser.add_argument('-g', '--graphs', dest='graphs_dir', metavar='GRAPHS_DIR', type=str, default='./graphs', nargs='?', help='directory in which to place the *.json which represent graph metadata')
-    parser.add_argument('-o', '--outfile', dest='outfile', metavar='BASE_FILENAME', type=str, default='geo_editors', help='base file name for csv and yaml files.  for example: DATASOURCE_DIR/BAS_FILENAME_en.yaml')
+    parser.add_argument(
+        'geo_files', 
+        metavar='GEOCODING_FILE.json', 
+        nargs='+',
+        help='any number of appropriately named json files')
+    parser.add_argument(
+        '-s','--datasource_dir',
+        default='./datasources',
+        nargs='?',
+        help='directory in which to place *.csv files for limn')
+    parser.add_argument(
+        '-f', '--datafile_dir',
+        default='./datafiles',
+        nargs='?', 
+        help='directory in which to place the *.yaml files for limn')
+    parser.add_argument(
+        '-g', '--graphs_dir',
+        default='./graphs', 
+        nargs='?',
+        help='directory in which to place the *.json which represent graph metadata')
+    parser.add_argument(
+        '-b', '--basename',
+        default='geo_editors',
+        help='base file name for csv and yaml files.  for example: DATASOURCE_DIR/BAS_FILENAME_en.yaml')
+    parser.add_argument(
+        '-k', 
+        type=int, 
+        default=10, 
+        help='the number of countries to include in the selected project datasource')
 
     args = parser.parse_args()
+
+    for name in [args.datafile_dir, args.datasource_dir, args.graphs_dir]:
+        if not os.path.exists(name):
+            os.makedirs(name)
+
     log.info(json.dumps(vars(args), indent=2))
     return args
 
 if __name__ == '__main__':
-    log.info('cwd: %s' % (os.getcwd()))
     args = parse_args()
-    json_all = load_json_files(args.geo_files)
-    fnames = write_datasources(json_all, args)
-    write_summary_graphs(json_all, fnames, args)
+    rows, projects = load_json_files(args.geo_files)
+    for project in projects:
+        write_project_datasource(project, rows, args)
+    #     write_project_datasource(project, rows args)
+    # write_overall_datasource(projects, rows, args)
+    # write_catalyst_datasource(projects, rows, args)
+
