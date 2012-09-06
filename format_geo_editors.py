@@ -68,6 +68,7 @@ def load_json_files(files):
     # everything is by date, so everyone wants things sorted
     by_date = OrderedDict(sorted(by_date.items()))
     #log.debug('rows: %s', rows)
+    projects = list(set(projects))
     log.debug('found projects: %s', projects)
     return by_date, projects
 
@@ -110,9 +111,9 @@ def top_k_countries(rows, k, filter_fn):
         for row in filtered_batch:
             if row['country'] != 'World':
                 country_totals[row['country']] += row['count']
-    print sorted(map(list,map(reversed,country_totals.items())), reverse=True)
+    #log.debug(sorted(map(list,map(reversed,country_totals.items())), reverse=True))
     keep_countries = zip(*sorted(map(list,map(reversed,country_totals.items())), reverse=True))[1][:k]
-    log.debug('keep_countries: %s', keep_countries)
+    #log.debug('keep_countries: %s', keep_countries)
     top_k_rows = {}
     for date, row_batch in rows.items():
         filtered_batch = filter(lambda row: row['country'] in keep_countries, row_batch)
@@ -121,7 +122,7 @@ def top_k_countries(rows, k, filter_fn):
     
 
 def write_project_datasource(proj, rows, args, k=None):
-    log.debug('proj: %s,\tlen(rows): %s' % (proj, len(rows)))
+    log.debug('writing project datasource for: %s, k=%s', proj, k)
     id = proj + '_all'
     name = '%s Editors by Country' % proj.upper()
 
@@ -158,6 +159,40 @@ def write_project_datasource(proj, rows, args, k=None):
     #def write_yaml(_id, name, fields, csv_name, rows, args):
     return write_yaml(id, name, all_fields, csv_name, rows, args)
 
+
+
+def write_overall_datasource(projects, rows, args):
+    log.info('writing overall datasource')
+    id = 'overall'
+    name = 'Overall Editors by Language'
+
+    csv_name = args.basename + '_' + name + '.csv'
+    csv_path = os.path.join(args.datafile_dir, csv_name)
+    csv_file = open(csv_path, 'w')
+
+    # remove rows that don't interest us and then grab the row id (country-cohort) and count
+    csv_rows = []
+    for date, row_batch in rows.items():
+        filtered_batch = filter(lambda row : row['country'] == 'World', row_batch)
+        csv_row = {'date' : date}
+        for row in filtered_batch:
+            csv_row[row['project']] = row['count']
+        csv_rows.append(csv_row)
+
+    # normalize fields
+    all_fields = sorted(reduce(set.__ior__, map(set,map(dict.keys, csv_rows)), set()))
+    all_fields.remove('date')
+    all_fields.insert(0,'date')
+
+    writer = csv.DictWriter(csv_file, all_fields, restval='', extrasaction='ignore')
+    writer.writeheader()
+    for csv_row in csv_rows:
+        writer.writerow(csv_row)
+    csv_file.close() 
+
+    #def write_yaml(_id, name, fields, csv_name, rows, args):
+    return write_yaml(id, name, all_fields, csv_name, rows, args)
+    
 
 def write_summary_graphs(json_all, args):
     for proj, rows in json_all.items():
@@ -265,6 +300,6 @@ if __name__ == '__main__':
     for project in projects:
         write_project_datasource(project, rows, args)
         write_project_datasource(project, rows, args, k = args.k)
-    # write_overall_datasource(projects, rows, args)
+    write_overall_datasource(projects, rows, args)
     # write_catalyst_datasource(projects, rows, args)
 
