@@ -103,9 +103,35 @@ def write_yaml(_id, name, fields, csv_name, rows, args):
     return yaml_path
 
 
-def write_project_datasource(proj, rows, args):
+def top_k_countries(rows, k, filter_fn):
+    country_totals = defaultdict(int)
+    for date, row_batch in rows.items():
+        filtered_batch = filter(filter_fn, row_batch)
+        for row in filtered_batch:
+            if row['country'] != 'World':
+                country_totals[row['country']] += row['count']
+    print sorted(map(list,map(reversed,country_totals.items())), reverse=True)
+    keep_countries = zip(*sorted(map(list,map(reversed,country_totals.items())), reverse=True))[1][:k]
+    log.debug('keep_countries: %s', keep_countries)
+    top_k_rows = {}
+    for date, row_batch in rows.items():
+        filtered_batch = filter(lambda row: row['country'] in keep_countries, row_batch)
+        top_k_rows[date] = filtered_batch
+    return top_k_rows
+    
+
+def write_project_datasource(proj, rows, args, k=None):
     log.debug('proj: %s,\tlen(rows): %s' % (proj, len(rows)))
-    csv_name = args.basename + '_' + proj + '.csv'
+    id = proj + '_all'
+    name = '%s Editors by Country' % proj.upper()
+
+    if k:
+        # only write top k countries
+        id = proj + '_top%d' % k
+        name = '%s Editors by Country (top %d)' % (proj.upper(), k)
+        rows = top_k_countries(rows, k, lambda row: row['project']==proj and row['cohort']=='all')
+
+    csv_name = args.basename + '_' + name + '.csv'
     csv_path = os.path.join(args.datafile_dir, csv_name)
     csv_file = open(csv_path, 'w')
 
@@ -130,7 +156,7 @@ def write_project_datasource(proj, rows, args):
     csv_file.close() 
 
     #def write_yaml(_id, name, fields, csv_name, rows, args):
-    return write_yaml('%s_editors_by_country' % proj, '%s Editors by Country' % proj.upper(), all_fields, csv_name, rows, args)
+    return write_yaml(id, name, all_fields, csv_name, rows, args)
 
 
 def write_summary_graphs(json_all, args):
@@ -238,7 +264,7 @@ if __name__ == '__main__':
     rows, projects = load_json_files(args.geo_files)
     for project in projects:
         write_project_datasource(project, rows, args)
-    #     write_project_datasource(project, rows args)
+        write_project_datasource(project, rows, args, k = args.k)
     # write_overall_datasource(projects, rows, args)
     # write_catalyst_datasource(projects, rows, args)
 
