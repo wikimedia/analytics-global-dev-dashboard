@@ -19,7 +19,7 @@ root_logger.setLevel(log.DEBUG)
 
 
 def get_date(fname):
-    dstr = fname.split('_')[1]
+    dstr = os.path.split(fname)[1].split('_')[1]
     full_fmt = '%Y%m%d'
     monthly_fmt = '%Y%m'
     try:
@@ -64,8 +64,6 @@ def load_json_files(files):
     # log.debug('f: %s' % (json.dumps(json_all, indent=2)))
     # expand tree structure of dictionaries into list of dicts with named fields
     rows = list(flatten(json_all, [], ['date', 'project', 'country', 'cohort', 'count']))
-    for row in rows:
-        row['country-cohort'] = row['country'] + '-' + row['cohort']
     by_date = Nest().key(itemgetter('date')).map(rows)
     # everything is by date, so everyone wants things sorted
     by_date = OrderedDict(sorted(by_date.items()))
@@ -90,19 +88,14 @@ def write_yaml(_id, name, fields, csv_name, rows, args):
     meta['timespan'] = timespan
 
     columns = {}
-    columns['types'] = ['date'] + ['int' for key in all_fields]
-    labels = ['Date'] + all_fields
-    clean_labels = []
-    for label in labels:
-        tmp = re.sub('\s', '_', label)
-        tmp = re.sub('[\(\)]', '', tmp)
-        clean_labels.append(tmp)
-    columns['labels'] = clean_labels
+    columns['types'] = ['int' for key in fields]
+    columns['types'][0] = 'date' # first row is always a day
+    columns['labels'] = fields
     meta['columns'] = columns
 
     meta['chart'] = {'chartType' : 'dygraphs'}
 
-    yaml_name = args.basename + '_' + proj + '.yaml'
+    yaml_name = args.basename + '_' + _id + '.yaml'
     yaml_path = os.path.join(args.datasource_dir, yaml_name)
     fyaml = open(yaml_path, 'w')
     fyaml.write(yaml.safe_dump(meta, default_flow_style=False))
@@ -122,11 +115,13 @@ def write_project_datasource(proj, rows, args):
         filtered_batch = filter(lambda row : row['project'] == proj, row_batch)
         csv_row = {'date' : date}
         for row in filtered_batch:
-            csv_row[row['country-cohort']] = row['count']
+            csv_row['%s (%s)' % (row['country'], row['cohort'])] = row['count']
         csv_rows.append(csv_row)
 
     # normalize fields
     all_fields = sorted(reduce(set.__ior__, map(set,map(dict.keys, csv_rows)), set()))
+    all_fields.remove('date')
+    all_fields.insert(0,'date')
 
     writer = csv.DictWriter(csv_file, all_fields, restval='', extrasaction='ignore')
     writer.writeheader()
@@ -134,9 +129,8 @@ def write_project_datasource(proj, rows, args):
         writer.writerow(csv_row)
     csv_file.close() 
 
-    #yaml_name = write_yaml('%s Editors' % proj.Upper(), rows, all_fields, csv_name, args)
-    
-    #return (csv_name, yaml_name)
+    #def write_yaml(_id, name, fields, csv_name, rows, args):
+    return write_yaml('%s_editors_by_country' % proj, '%s Editors by Country' % proj.upper(), all_fields, csv_name, rows, args)
 
 
 def write_summary_graphs(json_all, args):
