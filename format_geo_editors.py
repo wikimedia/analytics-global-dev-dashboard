@@ -1,7 +1,7 @@
 import argparse
 import logging as log
 import json
-from datetime import datetime
+import datetime, dateutil.parser
 from collections import defaultdict, OrderedDict
 from functools import partial
 from nesting import Nest
@@ -23,9 +23,9 @@ def get_date(fname):
     full_fmt = '%Y%m%d'
     monthly_fmt = '%Y%m'
     try:
-        d = datetime.strptime(dstr, full_fmt)
+        d = datetime.datetime.strptime(dstr, full_fmt)
     except ValueError:
-        d = datetime.strptime(dstr, monthly_fmt)
+        d = datetime.datetime.strptime(dstr, monthly_fmt)
     limn_fmt = '%Y/%m/%d'
     return d.date().strftime(limn_fmt)
 
@@ -60,7 +60,12 @@ def load_json_files(files):
     for f in files:
         json_f = json.load(open(f, 'r'))
         projects.append(json_f['project'])
-        json_all[get_date(f)][json_f['project']] = json_f['countries']
+        end = dateutil.parser.parse(json_f['end']) 
+        start = dateutil.parser.parse(json_f['start'])
+        if (end - start).days != 1:
+            continue
+        end_str = datetime.datetime.strftime(end, '%Y/%m/%d') 
+        json_all[end_str][json_f['project']] = json_f['countries']
     # log.debug('f: %s' % (json.dumps(json_all, indent=2)))
     # expand tree structure of dictionaries into list of dicts with named fields
     rows = list(flatten(json_all, [], ['date', 'project', 'country', 'cohort', 'count']))
@@ -85,7 +90,8 @@ def write_yaml(_id, name, fields, csv_name, rows, args):
     timespan = {}
     timespan['start'] = sorted(rows.keys())[0]
     timespan['end'] = sorted(rows.keys())[-1]
-    timespan['step'] = '1mo'
+    #timespan['step'] = '1mo'
+    timespan['step'] = '1d'
     meta['timespan'] = timespan
 
     columns = {}
@@ -123,16 +129,16 @@ def top_k_countries(rows, k, filter_fn):
 
 def write_project_datasource(proj, rows, args, k=None):
     log.debug('writing project datasource for: %s, k=%s', proj, k)
-    id = proj + '_all'
+    _id = proj + '_all'
     name = '%s Editors by Country' % proj.upper()
 
     if k:
         # only write top k countries
-        id = proj + '_top%d' % k
+        _id = proj + '_top%d' % k
         name = '%s Editors by Country (top %d)' % (proj.upper(), k)
         rows = top_k_countries(rows, k, lambda row: row['project']==proj and row['cohort']=='all')
 
-    csv_name = args.basename + '_' + name + '.csv'
+    csv_name = args.basename + '_' + _id + '.csv'
     csv_path = os.path.join(args.datafile_dir, csv_name)
     csv_file = open(csv_path, 'w')
 
@@ -157,7 +163,7 @@ def write_project_datasource(proj, rows, args, k=None):
     csv_file.close() 
 
     #def write_yaml(_id, name, fields, csv_name, rows, args):
-    return write_yaml(id, name, all_fields, csv_name, rows, args)
+    return write_yaml(_id, name, all_fields, csv_name, rows, args)
 
 
 
@@ -263,16 +269,19 @@ def parse_args():
     parser.add_argument(
         '-s','--datasource_dir',
         default='./datasources',
+        type=os.path.expanduser,
         nargs='?',
         help='directory in which to place *.csv files for limn')
     parser.add_argument(
         '-f', '--datafile_dir',
         default='./datafiles',
+        type=os.path.expanduser,
         nargs='?', 
         help='directory in which to place the *.yaml files for limn')
     parser.add_argument(
         '-g', '--graphs_dir',
         default='./graphs', 
+        type=os.path.expanduser,
         nargs='?',
         help='directory in which to place the *.json which represent graph metadata')
     parser.add_argument(
@@ -301,5 +310,4 @@ if __name__ == '__main__':
         write_project_datasource(project, rows, args)
         write_project_datasource(project, rows, args, k = args.k)
     write_overall_datasource(projects, rows, args)
-    # write_catalyst_datasource(projects, rows, args)
 
