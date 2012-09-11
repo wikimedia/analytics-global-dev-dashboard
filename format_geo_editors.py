@@ -18,6 +18,8 @@ root_logger.addHandler(ch)
 root_logger.setLevel(log.DEBUG)
 
 
+
+
 def get_date(fname):
     dstr = os.path.split(fname)[1].split('_')[1]
     full_fmt = '%Y%m%d'
@@ -26,8 +28,6 @@ def get_date(fname):
         d = datetime.datetime.strptime(dstr, full_fmt)
     except ValueError:
         d = datetime.datetime.strptime(dstr, monthly_fmt)
-    limn_fmt = '%Y/%m/%d'
-    return d.date().strftime(limn_fmt)
 
 def flatten(nest, path=[], keys=[]):
     #log.debug('entering with type(nest):%s,\tpath: %s' % (type(nest), path))
@@ -55,6 +55,8 @@ def flatten(nest, path=[], keys=[]):
 
 
 def load_json_files(files):
+    limn_fmt = '%Y/%m/%d'
+
     json_all = []
     for f in files:
         json_f = json.load(open(f, 'r'))
@@ -63,6 +65,8 @@ def load_json_files(files):
         if (json_f['end'] - json_f['start']).days != 30:
             logging.info('skipping file: because it is not a 30 day period')
             continue
+        json_f['end'] = json_f['end'].strftime(limn_fmt)
+        json_f['start'] = json_f['start'].strftime(limn_fmt)
         json_all.append(json_f)
     return json_all
 
@@ -70,16 +74,13 @@ def load_json_files(files):
 def get_rows(json_all):
     json_tree = defaultdict(dict)
     for json_f in json_all:
-        end_str = json_f['end'].strftime('%y-%m-%d')
-        json_tree[end_str][json_f['project']] = json_f['countries']
+        json_tree[json_f['end']][json_f['project']] = json_f['countries']
     # log.debug('f: %s' % (json.dumps(json_all, indent=2)))
     # expand tree structure of dictionaries into list of dicts with named fields
     rows = list(flatten(json_tree, [], ['date', 'project', 'country', 'cohort', 'count']))
     by_date = Nest().key(itemgetter('date')).map(rows)
     # everything is by date, so everyone wants things sorted
     by_date = OrderedDict(sorted(by_date.items()))
-    log.debug('dates: %s', by_date.keys())
-    #log.debug('rows: %s', rows)
     return by_date
     
 
@@ -181,14 +182,14 @@ def write_overall_datasource(projects, json_all, args):
     keys = ['end', 'project', 'world']
     json_tree = defaultdict(lambda : defaultdict(int))
     for json_f in json_all:
-        json_tree[json_f['end'].strftime('%y-%m-%d')][json_f['project']] = json_f['world']
+        json_tree[json_f['end']][json_f['project']] = json_f['world']
+
     # expand cohorts
-    print json_tree
     rows = list(flatten(json_tree, [], ['date', 'project', 'cohort', 'count']))
+
     # group by date
     by_date = Nest().key(itemgetter('date')).map(rows)
     by_date = OrderedDict(sorted(by_date.items()))
-    print by_date
 
     csv_name = args.basename + '_' + _id + '.csv'
     csv_path = os.path.join(args.datafile_dir, csv_name)
