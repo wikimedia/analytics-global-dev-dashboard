@@ -186,8 +186,9 @@ def write_overall_datasource(projects, json_all, args):
     print json_tree
     rows = list(flatten(json_tree, [], ['date', 'project', 'cohort', 'count']))
     # group by date
-    rows = Nest().key(itemgetter('date')).map(rows)
-    print rows
+    by_date = Nest().key(itemgetter('date')).map(rows)
+    by_date = OrderedDict(sorted(by_date.items()))
+    print by_date
 
     csv_name = args.basename + '_' + _id + '.csv'
     csv_path = os.path.join(args.datafile_dir, csv_name)
@@ -195,7 +196,7 @@ def write_overall_datasource(projects, json_all, args):
 
     # remove rows that don't interest us and then grab the row id (country-cohort) and count
     csv_rows = []
-    for date, row_batch in rows.items():
+    for date, row_batch in by_date.items():
         # TODO: need to be extracting the top level field 'world' (note the lowercase)
         csv_row = {'date' : date}
         for row in row_batch:
@@ -214,7 +215,7 @@ def write_overall_datasource(projects, json_all, args):
     csv_file.close() 
 
     #def write_yaml(_id, name, fields, csv_name, rows, args):
-    return write_yaml(_id, name, all_fields, csv_name, rows, args)
+    return write_yaml(_id, name, all_fields, csv_name, by_date, args)
     
 
 def write_summary_graphs(json_all, args):
