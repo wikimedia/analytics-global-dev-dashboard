@@ -55,27 +55,33 @@ def flatten(nest, path=[], keys=[]):
 
 
 def load_json_files(files):
-    json_all = defaultdict(dict)
-    projects = []
+    json_all = []
     for f in files:
         json_f = json.load(open(f, 'r'))
-        projects.append(json_f['project'])
-        end = dateutil.parser.parse(json_f['end']) 
-        start = dateutil.parser.parse(json_f['start'])
-        if (end - start).days != 1:
+        json_f['end'] = dateutil.parser.parse(json_f['end']) 
+        json_f['start'] = dateutil.parser.parse(json_f['start'])
+        if (json_f['end'] - json_f['start']).days != 30:
+            logging.info('skipping file: because it is not a 30 day period')
             continue
-        end_str = datetime.datetime.strftime(end, '%Y/%m/%d') 
-        json_all[end_str][json_f['project']] = json_f['countries']
+        json_all.append(json_f)
+    return json_all
+
+
+def get_rows(json_all):
+    json_tree = defaultdict(dict)
+    for json_f in json_all:
+        end_str = json_f['end'].strftime('%y-%m-%d')
+        json_tree[end_str][json_f['project']] = json_f['countries']
     # log.debug('f: %s' % (json.dumps(json_all, indent=2)))
     # expand tree structure of dictionaries into list of dicts with named fields
-    rows = list(flatten(json_all, [], ['date', 'project', 'country', 'cohort', 'count']))
+    rows = list(flatten(json_tree, [], ['date', 'project', 'country', 'cohort', 'count']))
     by_date = Nest().key(itemgetter('date')).map(rows)
     # everything is by date, so everyone wants things sorted
     by_date = OrderedDict(sorted(by_date.items()))
+    log.debug('dates: %s', by_date.keys())
     #log.debug('rows: %s', rows)
-    projects = list(set(projects))
-    log.debug('found projects: %s', projects)
-    return by_date, projects
+    return by_date
+    
 
 
 def write_yaml(_id, name, fields, csv_name, rows, args):
@@ -115,12 +121,11 @@ def top_k_countries(rows, k, filter_fn):
     for date, row_batch in rows.items():
         filtered_batch = filter(filter_fn, row_batch)
         for row in filtered_batch:
-            if row['country'] != 'World':
-                country_totals[row['country']] += row['count']
+            country_totals[row['country']] += row['count']
     #log.debug(sorted(map(list,map(reversed,country_totals.items())), reverse=True))
     keep_countries = zip(*sorted(map(list,map(reversed,country_totals.items())), reverse=True))[1][:k]
     #log.debug('keep_countries: %s', keep_countries)
-    top_k_rows = {}
+    top_k_rows = OrderedDict()
     for date, row_batch in rows.items():
         filtered_batch = filter(lambda row: row['country'] in keep_countries, row_batch)
         top_k_rows[date] = filtered_batch
@@ -167,21 +172,33 @@ def write_project_datasource(proj, rows, args, k=None):
 
 
 
-def write_overall_datasource(projects, rows, args):
+def write_overall_datasource(projects, json_all, args):
     log.info('writing overall datasource')
-    id = 'overall'
+    _id = 'overall'
     name = 'Overall Editors by Language'
 
-    csv_name = args.basename + '_' + name + '.csv'
+    # build rows
+    keys = ['end', 'project', 'world']
+    json_tree = defaultdict(lambda : defaultdict(int))
+    for json_f in json_all:
+        json_tree[json_f['end'].strftime('%y-%m-%d')][json_f['project']] = json_f['world']
+    # expand cohorts
+    print json_tree
+    rows = list(flatten(json_tree, [], ['date', 'project', 'cohort', 'count']))
+    # group by date
+    rows = Nest().key(itemgetter('date')).map(rows)
+    print rows
+
+    csv_name = args.basename + '_' + _id + '.csv'
     csv_path = os.path.join(args.datafile_dir, csv_name)
     csv_file = open(csv_path, 'w')
 
     # remove rows that don't interest us and then grab the row id (country-cohort) and count
     csv_rows = []
     for date, row_batch in rows.items():
-        filtered_batch = filter(lambda row : row['country'] == 'World', row_batch)
+        # TODO: need to be extracting the top level field 'world' (note the lowercase)
         csv_row = {'date' : date}
-        for row in filtered_batch:
+        for row in row_batch:
             csv_row[row['project']] = row['count']
         csv_rows.append(csv_row)
 
@@ -197,7 +214,7 @@ def write_overall_datasource(projects, rows, args):
     csv_file.close() 
 
     #def write_yaml(_id, name, fields, csv_name, rows, args):
-    return write_yaml(id, name, all_fields, csv_name, rows, args)
+    return write_yaml(_id, name, all_fields, csv_name, rows, args)
     
 
 def write_summary_graphs(json_all, args):
@@ -305,9 +322,11 @@ def parse_args():
 
 if __name__ == '__main__':
     args = parse_args()
-    rows, projects = load_json_files(args.geo_files)
-    for project in projects:
-        write_project_datasource(project, rows, args)
-        write_project_datasource(project, rows, args, k = args.k)
-    write_overall_datasource(projects, rows, args)
+    json_all = load_json_files(args.geo_files)
+    projects = list(set(map(itemgetter('project'), json_all)))
+    rows = get_rows(json_all)
+#    for project in projects:
+#        write_project_datasource(project, rows, args)
+#        write_project_datasource(project, rows, args, k = args.k)
+    write_overall_datasource(projects, json_all, args)
 
