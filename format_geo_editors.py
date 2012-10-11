@@ -1,6 +1,6 @@
 import argparse
 import logging as log
-import json
+import json, pprint
 import datetime, dateutil.parser
 from collections import defaultdict, OrderedDict
 from functools import partial
@@ -17,17 +17,6 @@ ch.setFormatter(formatter)
 root_logger.addHandler(ch)
 root_logger.setLevel(log.DEBUG)
 
-
-
-
-def get_date(fname):
-    dstr = os.path.split(fname)[1].split('_')[1]
-    full_fmt = '%Y%m%d'
-    monthly_fmt = '%Y%m'
-    try:
-        d = datetime.datetime.strptime(dstr, full_fmt)
-    except ValueError:
-        d = datetime.datetime.strptime(dstr, monthly_fmt)
 
 def flatten(nest, path=[], keys=[]):
     #log.debug('entering with type(nest):%s,\tpath: %s' % (type(nest), path))
@@ -201,7 +190,7 @@ def write_overall_datasource(projects, json_all, args):
         # TODO: need to be extracting the top level field 'world' (note the lowercase)
         csv_row = {'date' : date}
         for row in row_batch:
-            csv_row[row['project']] = row['count']
+            csv_row['%s (%s)' % (row['project'], row['cohort'])] = row['count']
         csv_rows.append(csv_row)
 
     # normalize fields
@@ -319,7 +308,7 @@ def parse_args():
         if not os.path.exists(name):
             os.makedirs(name)
 
-    log.info(json.dumps(vars(args), indent=2))
+    log.info(pprint.pformat(vars(args), indent=2))
     return args
 
 if __name__ == '__main__':
@@ -327,8 +316,8 @@ if __name__ == '__main__':
     json_all = load_json_files(args.geo_files)
     projects = list(set(map(itemgetter('project'), json_all)))
     rows = get_rows(json_all)
-#    for project in projects:
-#        write_project_datasource(project, rows, args)
-#        write_project_datasource(project, rows, args, k = args.k)
+    for project in projects:
+        write_project_datasource(project, rows, args)
+        write_project_datasource(project, rows, args, k = args.k)
     write_overall_datasource(projects, json_all, args)
 
