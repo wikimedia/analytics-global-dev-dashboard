@@ -1,45 +1,46 @@
 import argparse
-import logging as log
+import logging
 import json, pprint
 import datetime, dateutil.parser
-from collections import defaultdict, OrderedDict
-from functools import partial
+from collections import defaultdict, OrderedDict, Container
 from nesting import Nest
 from operator import itemgetter
-import yaml, csv
 import re
 import os
+import nesting
 
-root_logger = log.getLogger()
-ch = log.StreamHandler()
-formatter = log.Formatter('[%(levelname)s]\t[%(threadName)s]\t[%(funcName)s:%(lineno)d]\t%(message)s')
+import limnpy
+
+root_logger = logging.getLogger()
+ch = logging.StreamHandler()
+formatter = logging.Formatter('[%(levelname)s]\t[%(threadName)s]\t[%(funcName)s:%(lineno)d]\t%(message)s')
 ch.setFormatter(formatter)
 root_logger.addHandler(ch)
-root_logger.setLevel(log.DEBUG)
+root_logger.setLevel(logging.DEBUG)
 
 
 def flatten(nest, path=[], keys=[]):
-    #log.debug('entering with type(nest):%s,\tpath: %s' % (type(nest), path))
+    #logging.debug('entering with type(nest):%s,\tpath: %s' % (type(nest), path))
     # try to use as dict
     try:
-        #log.debug('trying to use as dict')
+        #logging.debug('trying to use as dict')
         for k, v in nest.items():
-            #log.debug('calling flatten(%s, %s)' % (k, v))
+            #logging.debug('calling flatten(%s, %s)' % (k, v))
             for row in flatten(v, path + [k], keys):
                 yield row
     except AttributeError:
-        #log.debug('nest has not attribute \'items()\'')
+        #logging.debug('nest has not attribute \'items()\'')
         # try to use as list
         try:
-            #log.debug('trying to use as list')
+            #logging.debug('trying to use as list')
             for elem in nest:
                 for row in flatten(elem, path, keys):
                     yield row
         except TypeError:
-            #log.debug('nest object of type %s is not iterable' % (type(nest)))
-            #log.debug('reached leaf of type: %s' % (type(nest)))
+            #logging.debug('nest object of type %s is not iterable' % (type(nest)))
+            #logging.debug('reached leaf of type: %s' % (type(nest)))
             # must be a leaf, finally yield
-            #log.debug('yielding %s' % (path + [nest]))
+            #logging.debug('yielding %s' % (path + [nest]))
             yield dict(zip(keys, path + [nest]))
 
 
@@ -61,209 +62,126 @@ def load_json_files(files):
 
 
 def get_rows(json_all):
+    world_rows = []
     json_tree = defaultdict(dict)
     for json_f in json_all:
+        for cohort, count in json_f['world'].items():
+            world_row = {'date' : json_f['end'], 'project' : json_f['project'], 'world' : True, 'cohort' :  cohort, 'count' : count}
+            world_rows.append(world_row)
         json_tree[json_f['end']][json_f['project']] = json_f['countries']
-    # log.debug('f: %s' % (json.dumps(json_all, indent=2)))
+    # logging.debug('f: %s' % (json.dumps(json_all, indent=2)))
     # expand tree structure of dictionaries into list of dicts with named fields
     rows = list(flatten(json_tree, [], ['date', 'project', 'country', 'cohort', 'count']))
-    by_date = Nest().key(itemgetter('date')).map(rows)
-    # everything is by date, so everyone wants things sorted
-    by_date = OrderedDict(sorted(by_date.items()))
-    return by_date
+    all_rows = rows + world_rows
+    return Collection(all_rows)
+
+
+class Collection(object):
+
+    def __init__(self, rows, index_keys=[]):
+        self.row_hashes = {hash(frozenset(row.items())) : row for row in rows}
+        self.indices = {}
+        for key in index_keys:
+            self.index(key)
+
+    def __iter__(self):
+        return iter(self.row_hashes.values())
+
+    def index(self, key):
+        logging.info('creating index for key: %s', key)
+        idx = defaultdict(set)
+        for row_hash, row in self.row_hashes.items():
+            if key in row:
+                idx[row[key]].add(row_hash)
+        self.indices[key] = idx
+
+    @classmethod
+    def smart_list(cls, val):
+        if isinstance(val, Container) and not isinstance(val, basestring):
+            return val
+        else:
+            return [val]
+
+    def find(self, probe):
+        filtered = set(self.row_hashes.keys())
+        #logging.debug('initial len(filtered): %s', len(filtered))
+        for key, val in probe.items():
+            val_list = Collection.smart_list(val)
+            if key not in self.indices:
+                self.index(key)
+            idx = self.indices[key]
+            filtered = filtered & idx[val]
+            #logging.debug('len(filtered): %s', len(filtered))
+        rows = map(self.row_hashes.get, filtered)
+        #logging.debug('probe: %s\tlen(rows): %s', pprint.pformat(probe), len(rows))
+        return rows
     
+    @classmethod
+    def iter_find(cls, probe, rows):
+        def filter_fn(row):
+            for k, v in probe.items():
+                if k not in row or row[k] not in Collection.smart_list(v):
+                    return False
+            return True
+        return filter(filter_fn, rows)
 
 
-def write_yaml(_id, name, fields, csv_name, rows, args):
+def make_limn_rows(rows, col_prim_key):
+    transformed = []
+    for row in rows:
+        if col_prim_key in row:
+            transformed.append({'date' : row['date'], '%s (%s)' % (row[col_prim_key], row['cohort']) : row['count']})
+    transformed = Collection(transformed)
+    limn_rows = []
+    dates = map(itemgetter('date'), iter(transformed))
+    for date in dates:
+        limn_row = {'date' : date}
+        date_rows = transformed.find({'date' : date})
+        for date_row in date_rows:
+            limn_row.update(date_row)
+        limn_rows.append(limn_row)
+    return limn_rows
+        
 
-    meta = {}
-    meta['id'] = _id
-    meta['name'] = name
-    meta['shortName'] = meta['name']
-    meta['format'] = 'csv'
-    meta['url'] = '/data/datafiles/' + csv_name
-
-    timespan = {}
-    timespan['start'] = sorted(rows.keys())[0]
-    timespan['end'] = sorted(rows.keys())[-1]
-    #timespan['step'] = '1mo'
-    timespan['step'] = '1d'
-    meta['timespan'] = timespan
-
-    columns = {}
-    columns['types'] = ['int' for key in fields]
-    columns['types'][0] = 'date' # first row is always a day
-    columns['labels'] = fields
-    meta['columns'] = columns
-
-    meta['chart'] = {'chartType' : 'dygraphs'}
-
-    yaml_name = args.basename + '_' + _id + '.yaml'
-    yaml_path = os.path.join(args.datasource_dir, yaml_name)
-    fyaml = open(yaml_path, 'w')
-    fyaml.write(yaml.safe_dump(meta, default_flow_style=False))
-    fyaml.close()
-    return yaml_path
-
-
-def top_k_countries(rows, k, filter_fn):
-    country_totals = defaultdict(int)
-    for date, row_batch in rows.items():
-        filtered_batch = filter(filter_fn, row_batch)
-        for row in filtered_batch:
-            country_totals[row['country']] += row['count']
-    #log.debug(sorted(map(list,map(reversed,country_totals.items())), reverse=True))
-    keep_countries = zip(*sorted(map(list,map(reversed,country_totals.items())), reverse=True))[1][:k]
-    #log.debug('keep_countries: %s', keep_countries)
-    top_k_rows = OrderedDict()
-    for date, row_batch in rows.items():
-        filtered_batch = filter(lambda row: row['country'] in keep_countries, row_batch)
-        top_k_rows[date] = filtered_batch
-    return top_k_rows
-    
-
-def write_project_datasource(proj, rows, args, k=None):
-    log.debug('writing project datasource for: %s, k=%s', proj, k)
+def write_project(proj, rows, basedir):
+    logging.debug('writing project datasource for: %s', proj)
     _id = proj + '_all'
     name = '%s Editors by Country' % proj.upper()
 
-    if k:
-        # only write top k countries
-        _id = proj + '_top%d' % k
-        name = '%s Editors by Country (top %d)' % (proj.upper(), k)
-        rows = top_k_countries(rows, k, lambda row: row['project']==proj and row['cohort']=='all')
-
-    csv_name = args.basename + '_' + _id + '.csv'
-    csv_path = os.path.join(args.datafile_dir, csv_name)
-    csv_file = open(csv_path, 'w')
-
-    # remove rows that don't interest us and then grab the row id (country-cohort) and count
-    csv_rows = []
-    for date, row_batch in rows.items():
-        filtered_batch = filter(lambda row : row['project'] == proj, row_batch)
-        csv_row = {'date' : date}
-        for row in filtered_batch:
-            csv_row['%s (%s)' % (row['country'], row['cohort'])] = row['count']
-        csv_rows.append(csv_row)
-
-    # normalize fields
-    all_fields = sorted(reduce(set.__ior__, map(set,map(dict.keys, csv_rows)), set()))
-    all_fields.remove('date')
-    all_fields.insert(0,'date')
-
-    writer = csv.DictWriter(csv_file, all_fields, restval='', extrasaction='ignore')
-    writer.writeheader()
-    for csv_row in csv_rows:
-        writer.writerow(csv_row)
-    csv_file.close() 
-
-    #def write_yaml(_id, name, fields, csv_name, rows, args):
-    return write_yaml(_id, name, all_fields, csv_name, rows, args)
+    proj_rows = rows.find({'project' : proj})
+    logging.debug('len(proj_rows): %d', len(proj_rows))
+    limn_rows = make_limn_rows(proj_rows, 'country')
+    limnpy.write(_id, name, limn_rows, basedir=basedir)
 
 
+def top_k_countries(rows, k, probe):
+    filtered_rows = rows.find(probe)
+    country_totals = defaultdict(int)
+    for row in filtered_rows:
+        country_totals[row['country']] += row['count']
+    #logging.debug(sorted(map(list,map(reversed,country_totals.items())), reverse=True))
+    keep_countries = zip(*sorted(map(list,map(reversed,country_totals.items())), reverse=True))[1][:k]
+    return keep_countries
 
-def write_overall_datasource(projects, json_all, args):
-    log.info('writing overall datasource')
+
+def write_project_top_k(proj, rows, basedir, k=10):
+    _id = proj + '_top%d' % k
+    name = '%s Editors by Country (top %d)' % (proj.upper(), k)
+    top_k = top_k_countries(rows, k, {'project' : proj, 'cohort' : 'all'})
+    proj_rows = rows.find({'country' : top_k, 'project' : proj})
+    limn_rows = make_limn_rows(proj_rows, 'country')
+    limnpy.write(_id, name, limn_rows, basedir=basedir)
+
+
+def write_overall(projects, rows, basedir):
+    logging.info('writing overall datasource')
     _id = 'overall'
     name = 'Overall Editors by Language'
 
-    # build rows
-    keys = ['end', 'project', 'world']
-    json_tree = defaultdict(lambda : defaultdict(int))
-    for json_f in json_all:
-        json_tree[json_f['end']][json_f['project']] = json_f['world']
-
-    # expand cohorts
-    rows = list(flatten(json_tree, [], ['date', 'project', 'cohort', 'count']))
-
-    # group by date
-    by_date = Nest().key(itemgetter('date')).map(rows)
-    by_date = OrderedDict(sorted(by_date.items()))
-
-    csv_name = args.basename + '_' + _id + '.csv'
-    csv_path = os.path.join(args.datafile_dir, csv_name)
-    csv_file = open(csv_path, 'w')
-
-    # remove rows that don't interest us and then grab the row id (country-cohort) and count
-    csv_rows = []
-    for date, row_batch in by_date.items():
-        # TODO: need to be extracting the top level field 'world' (note the lowercase)
-        csv_row = {'date' : date}
-        for row in row_batch:
-            csv_row['%s (%s)' % (row['project'], row['cohort'])] = row['count']
-        csv_rows.append(csv_row)
-
-    # normalize fields
-    all_fields = sorted(reduce(set.__ior__, map(set,map(dict.keys, csv_rows)), set()))
-    all_fields.remove('date')
-    all_fields.insert(0,'date')
-
-    writer = csv.DictWriter(csv_file, all_fields, restval='', extrasaction='ignore')
-    writer.writeheader()
-    for csv_row in csv_rows:
-        writer.writerow(csv_row)
-    csv_file.close() 
-
-    #def write_yaml(_id, name, fields, csv_name, rows, args):
-    return write_yaml(_id, name, all_fields, csv_name, by_date, args)
-    
-
-def write_summary_graphs(json_all, args):
-    for proj, rows in json_all.items():
-        graph = {}
-        graph['options'] = {
-            "strokeWidth": 4,
-            "pointSize": 4,
-            "stackedGraph": true,
-            "digitsAfterDecimal": 0,
-            "drawPoints": true,
-            "axisLabelFontSize": 12,
-            "xlabel": "Date",
-            "ylabel": "# Active Editors (>5 Edits)"
-            }
-        graph["name"] = "Arabic WP Active Editors by Country (stacked graph)",
-        graph["notes"] = ""
-        graph["callout"] = {
-            "enabled": true,
-            "metric_idx": 0,
-            "label": ""
-            }
-        graph["slug"] = "ar_wp"
-        graph["width"] = "auto"
-        graph["parents"] = ["root"]
-        graph["result"] = "ok"
-        graph["id"] = "ar_wp"
-        graph["chartType"] = "dygraphs"
-        graph["height"] = 320
-        metrics = []
-        for i,  in enumerate(rows):
-            if i >= k:
-                break
-            metric = {}
-            metric["index"] = 1,
-            metric["scale"] = 1,
-            metric["timespan"] = {
-            "start": null,
-            "step": null,
-            "end": null
-            },
-            metric["color"] = "#d53e4f",
-            metric["format_axis"] = null,
-            metric["label"] = "Algeria",
-            metric["disabled"] = false,
-            metric["visible"] = true,
-            metric["format_value"] = null,
-            metric["transforms"] = [],
-            metric["source_id"] = "active_editors_ar",
-            metric["chartType"] = null,
-            metric["type"] = "int",
-            metric["source_col"] = 5
-            metrics.append(metric)
-        data = {}
-        data["metrics"] = metrics
-        graph["data"] = data
-
-
+    overall_rows = rows.find({'world' : True})
+    limn_rows = make_limn_rows(overall_rows, 'project')
+    #logging.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
+    limnpy.write(_id, name, limn_rows, basedir=basedir)
 
 
 def parse_args():
@@ -275,27 +193,14 @@ def parse_args():
         nargs='+',
         help='any number of appropriately named json files')
     parser.add_argument(
-        '-s','--datasource_dir',
-        default='./datasources',
+        '-d','--basedir',
+        default='.',
         type=os.path.expanduser,
-        nargs='?',
-        help='directory in which to place *.csv files for limn')
-    parser.add_argument(
-        '-f', '--datafile_dir',
-        default='./datafiles',
-        type=os.path.expanduser,
-        nargs='?', 
-        help='directory in which to place the *.yaml files for limn')
-    parser.add_argument(
-        '-g', '--graphs_dir',
-        default='./graphs', 
-        type=os.path.expanduser,
-        nargs='?',
-        help='directory in which to place the *.json which represent graph metadata')
+        help='directory in which to find or create the datafiles and datasources directories for the *.csv and *.yaml files')
     parser.add_argument(
         '-b', '--basename',
         default='geo_editors',
-        help='base file name for csv and yaml files.  for example: DATASOURCE_DIR/BAS_FILENAME_en.yaml')
+        help='base file name for csv and yaml files.  for example: BASEDIR/datasources/BAS_FILENAME_en.yaml')
     parser.add_argument(
         '-k', 
         type=int, 
@@ -303,21 +208,16 @@ def parse_args():
         help='the number of countries to include in the selected project datasource')
 
     args = parser.parse_args()
-
-    for name in [args.datafile_dir, args.datasource_dir, args.graphs_dir]:
-        if not os.path.exists(name):
-            os.makedirs(name)
-
-    log.info(pprint.pformat(vars(args), indent=2))
+    logging.info(pprint.pformat(vars(args), indent=2))
     return args
 
 if __name__ == '__main__':
     args = parse_args()
-    json_all = load_json_files(args.geo_files)
-    projects = list(set(map(itemgetter('project'), json_all)))
-    rows = get_rows(json_all)
+    files = load_json_files(args.geo_files)
+    projects = list(set(map(itemgetter('project'), files)))
+    rows = get_rows(files)
     for project in projects:
-        write_project_datasource(project, rows, args)
-        write_project_datasource(project, rows, args, k = args.k)
-    write_overall_datasource(projects, json_all, args)
+        write_project(project, rows, args.basedir)
+#        write_project_top_k(project, rows, args.basedir, k=args.k)
+#    write_overall(projects, rows, args.basedir)
 
