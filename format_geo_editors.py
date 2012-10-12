@@ -3,13 +3,13 @@ import logging
 import json, pprint
 import datetime, dateutil.parser
 from collections import defaultdict, OrderedDict, Container
-from nesting import Nest
+import itertools
 from operator import itemgetter
 import re
 import os
-import nesting
 
 import limnpy
+import gcat
 
 root_logger = logging.getLogger()
 ch = logging.StreamHandler()
@@ -80,6 +80,7 @@ class Collection(object):
 
     def __init__(self, rows, index_keys=[]):
         self.row_hashes = {hash(frozenset(row.items())) : row for row in rows}
+        self.row_hash_set = frozenset(self.row_hashes.keys())
         self.indices = {}
         for key in index_keys:
             self.index(key)
@@ -94,28 +95,35 @@ class Collection(object):
             if key in row:
                 idx[row[key]].add(row_hash)
         self.indices[key] = idx
+        logging.info('finished creating index for key: %s', key)
 
     @classmethod
-    def smart_list(cls, val):
-        if isinstance(val, Container) and not isinstance(val, basestring):
-            return val
-        else:
-            return [val]
+    def is_iterable(cls, val):
+        return isinstance(val, Container) and not isinstance(val, basestring)
+
 
     def find(self, probe):
-        filtered = set(self.row_hashes.keys())
+        filtered = self.row_hash_set
         #logging.debug('initial len(filtered): %s', len(filtered))
-        for key, val in probe.items():
-            val_list = Collection.smart_list(val)
+        for key, raw_val in probe.items():
             if key not in self.indices:
                 self.index(key)
             idx = self.indices[key]
-            filtered = filtered & idx[val]
+            if not Collection.is_iterable(raw_val):
+                filtered = filtered & idx[raw_val]
+            else:
+                candidates = reduce(set.__ior__, map(idx.get, raw_val), set())
+                filtered = filtered & candidates
             #logging.debug('len(filtered): %s', len(filtered))
         rows = map(self.row_hashes.get, filtered)
         #logging.debug('probe: %s\tlen(rows): %s', pprint.pformat(probe), len(rows))
         return rows
     
+    def distinct(self, key):
+        if key not in self.indices:
+            self.index(key)
+        return self.indices[key].keys()
+            
     @classmethod
     def iter_find(cls, probe, rows):
         def filter_fn(row):
@@ -128,18 +136,21 @@ class Collection(object):
 
 def make_limn_rows(rows, col_prim_key):
     transformed = []
+    logging.debug('transforming rows to {\'date\' : date, \'%s (cohort)\' : count}', col_prim_key)
     for row in rows:
         if col_prim_key in row:
             transformed.append({'date' : row['date'], '%s (%s)' % (row[col_prim_key], row['cohort']) : row['count']})
     transformed = Collection(transformed)
     limn_rows = []
-    dates = map(itemgetter('date'), iter(transformed))
+    dates = transformed.distinct('date')
+    logging.debug('making final rows')
     for date in dates:
         limn_row = {'date' : date}
         date_rows = transformed.find({'date' : date})
         for date_row in date_rows:
             limn_row.update(date_row)
         limn_rows.append(limn_row)
+    logging.debug('exiting')
     return limn_rows
         
 
@@ -155,10 +166,9 @@ def write_project(proj, rows, basedir):
 
 
 def top_k_countries(rows, k, probe):
-    filtered_rows = rows.find(probe)
-    country_totals = defaultdict(int)
-    for row in filtered_rows:
-        country_totals[row['country']] += row['count']
+    filtered_rows = Collection(rows.find(probe))
+    country_rows = merge_rows(['country'], filtered_rows)
+    country_totals = dict(map(itemgetter('country', 'count'), country_rows))
     #logging.debug(sorted(map(list,map(reversed,country_totals.items())), reverse=True))
     keep_countries = zip(*sorted(map(list,map(reversed,country_totals.items())), reverse=True))[1][:k]
     return keep_countries
@@ -183,6 +193,44 @@ def write_overall(projects, rows, basedir):
     #logging.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
     limnpy.write(_id, name, limn_rows, basedir=basedir)
 
+
+def merge_rows(group_keys, rows, merge_key='count', merge_red_fn=int.__add__, red_init=0):
+    logging.debug('merging rows by grouping on: %s', group_keys)
+    logging.debug('reducing field %s with fn: %s, init_val: %s', merge_key, merge_red_fn, red_init)
+    group_vals = map(rows.distinct, group_keys)
+    #logging.debug('group_vals: %s', pprint.pformat(dict(zip(group_keys, group_vals))))
+    merged_rows = []
+    for group_val in itertools.product(*group_vals):
+        group_probe = dict(zip(group_keys, group_val))
+        group_rows = rows.find(group_probe)
+        merged_val = reduce(merge_red_fn, map(itemgetter(merge_key), group_rows), red_init)
+        group_probe[merge_key] = merged_val
+        merged_rows.append(group_probe)
+    return merged_rows
+
+
+def join(join_key, coll1, coll2):
+    logging.debug('joining...')
+    intersection = set(coll1.distinct(join_key)) & set(coll2.distinct(join_key))
+    joined_rows = []
+    for val in intersection:
+        probe = {join_key : val}
+        pairs = itertools.product(coll1.find(probe), coll2.find(probe))
+        for row1, row2 in pairs:
+            joined_rows.append(dict(row1.items() + row2.items()))
+    logging.debug('done')
+    return joined_rows
+
+
+def write_group(group_key, rows, basedir):
+    group_rows = merge_rows([group_key, 'cohort', 'date'], rows)
+    if not group_rows:
+        logging.warning('group_rows for group_key: %s is empty! (group_rows: %s)', group_key, group_rows)
+    limn_rows = make_limn_rows(group_rows, group_key)
+    if limn_rows:
+        limnpy.write(group_key.replace(' ', '_').lower(), group_key.replace('_', ' ').title(), limn_rows, basedir=basedir)
+    else:
+        logging.warning('limn_rows for group_key: %s is empty! (limn_rows: %s)', group_key, limn_rows)
 
 def parse_args():
 
@@ -218,6 +266,16 @@ if __name__ == '__main__':
     rows = get_rows(files)
     for project in projects:
         write_project(project, rows, args.basedir)
-#        write_project_top_k(project, rows, args.basedir, k=args.k)
-#    write_overall(projects, rows, args.basedir)
+        write_project_top_k(project, rows, args.basedir, k=args.k)
+    write_overall(projects, rows, args.basedir)
 
+    # use metadata from Google Drive doc which lets us group by country
+    country_data = gcat.get_file('Global South and Region Classifications', usecache=True)
+    #logging.debug('country_data: %s', pprint.pformat(country_data))
+    country_data = Collection(country_data)
+    joined_rows = Collection(join('country', country_data, rows))
+
+    write_group('country', joined_rows, args.basedir)
+    write_group('region', joined_rows, args.basedir)
+    write_group('global_south', joined_rows, args.basedir)
+    write_group('catalyst', joined_rows, args.basedir)
