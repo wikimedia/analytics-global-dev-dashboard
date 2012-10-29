@@ -132,10 +132,13 @@ def make_limn_rows(rows, col_prim_key, count_key = 'count'):
     logging.debug('making limn rows from rows with keys:%s', rows[0].keys())
     logging.debug('col_prim_key: %s', col_prim_key)
     logging.debug('len(rows): %s', len(rows))
-    rows = map(dict, rows) # simple hack to stop sqlite3.Row weirdness
+    rows = map(dict, rows) # need real dicts, not sqlite.Rows
+
+    filtered = filter(lambda r : r['cohort'] in ['all', '5+', '100+'], rows)
+
     transformed = []
     # logging.debug('transforming rows to {\'date\' : end, \'%s (cohort)\' : count}', col_prim_key)
-    for row in rows:
+    for row in filtered:
         if col_prim_key in row:
             transformed.append({'date' : row['end'], '%s (%s)' % (row[col_prim_key], row['cohort']) : row[count_key]})
         else:
@@ -180,9 +183,10 @@ def write_project_mysql(proj, cursor, basedir):
 
     if sql.paramstyle == 'qmark':
         query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=?"""
+        logging.debug('making query: %s', query)
     elif sql.paramstyle == 'format':
         query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=%s"""
-    cursor.execute(query, (proj,))
+    cursor.execute(query, [proj])
     proj_rows = cursor.fetchall()
     
     logging.debug('len(proj_rows): %d', len(proj_rows))
@@ -314,18 +318,18 @@ def write_group_mysql(group_key, country_data, cursor, basedir):
         if sql.paramstyle == 'qmark':
             group_query = """SELECT end, cohort, SUM(count) 
                          FROM erosen_geocode_active_editors_country
-                         WHERE country IN (?)
+                         WHERE country IN (%s)
                          GROUP BY end, cohort"""
+            countries_fmt = ', '.join([' ? ']*len(countries))
         elif sql.paramstyle == 'format':
             group_query = """SELECT end, cohort, SUM(count) 
                          FROM erosen_geocode_active_editors_country
                          WHERE country IN (%s)
                          GROUP BY end, cohort"""
-
-        countries_fmt = ', '.join(['%s']*len(countries))
         group_query_fmt = group_query % countries_fmt
         cursor.execute(group_query_fmt, tuple(countries))
         group_rows = cursor.fetchall()
+        group_rows = map(dict, group_rows)
         for row in group_rows:
             row.update({group_key : group_val})
         all_rows.extend(group_rows)
@@ -370,6 +374,12 @@ def parse_args():
         type=int, 
         default=10, 
         help='the number of countries to include in the selected project datasource')
+    parser.add_argument(
+        '-p', '--parallel',
+        action='store_true',
+        default=False,
+        help='use a multiprocessing pool to execute per-language analysis in parallel'
+        )
 
     args = parser.parse_args()
     logging.info(pprint.pformat(vars(args), indent=2))
@@ -405,27 +415,28 @@ def process_project(project, cursor, basedir):
 if __name__ == '__main__':
     args = parse_args()
 
-    projects = get_projects()
-    # db = MySQLdb.connect(read_default_file=os.path.expanduser('~/.my.cnf.research'), db='staging')
+    # db = MySQLdb.connect(read_default_file=os.path.expanduser('~/.my.cnf.research'), db='staging', cursorclass=MySQLdb.cursors.DictCursor)
     db = sql.connect('/home/erosen/src/editor-geocoding/geowiki.sqlite')
     db.row_factory = sql.Row
     cursor = db.cursor()
-    # cursor = db.cursor(MySQLdb.cursors.DictCursor)
 
-    for i, project in enumerate(projects):
-        logging.info('processing project: %s (%d/%d)', project, i, len(projects))
-        process_project(project, cursor, args.basedir)
+    projects = get_projects()
+    if not args.parallel or sql.threadsafety < 2:
+        for i, project in enumerate(projects):
+            logging.info('processing project: %s (%d/%d)', project, i, len(projects))
+            process_project(project, cursor, args.basedir)
+    else:
+        pool = multiprocessing.Pool(10)
+        pool.map_async(process_project_par, itertools.izip(projects, itertools.repeat(args.basedir))).get(99999)
 
-    # pool = multiprocessing.Pool(10)
-    # pool.map_async(process_project_par, itertools.izip(projects, itertools.repeat(args.basedir))).get(99999)
-
-    write_overall_mysql(projects, cursor, args.basedir)
+    # write_overall_mysql(projects, cursor, args.basedir)
 
     # use metadata from Google Drive doc which lets us group by country
-    country_data = gcat.get_file('Global South and Region Classifications', usecache=True)
+    country_data = gcat.get_file('Global South and Region Classifications', sheet='data', fmt='dict', usecache=True)
+    logging.debug('typ(country_data): %s', type(country_data))
     logging.info('country_data[0].keys: %s', country_data[0].keys())
 
-#    write_group_mysql('country', country_data, cursor, args.basedir)
+    write_group_mysql('country', country_data, cursor, args.basedir)
     write_group_mysql('region', country_data, cursor, args.basedir)
     write_group_mysql('global_south', country_data, cursor, args.basedir)
     write_group_mysql('catalyst', country_data, cursor, args.basedir)
