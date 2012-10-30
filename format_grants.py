@@ -5,8 +5,8 @@ import pandas as pd
 import itertools
 import xlrd
 import datetime
-from functional import compose
-from operator import itemgetter, attrgetter
+import re
+
 import limnpy
 import gcat
 
@@ -50,9 +50,16 @@ def clean_rows(rows):
     return clean
 
 
-def limnify(grouped):
-    for rowx in range(len(grouped)):
-        logging.debug('row: %s', grouped.ix[rowx])
+def write_limn_files(pt, val_key, group_key):
+    pt['date'] = map(pd.Timestamp.to_datetime, pt.index)
+    limn_rows = [dict(pt.irow(i)) for i in range(len(pt))]
+    limn_labels = list(pt.columns)
+
+    limn_name = ('Grants %s by %s' % (val_key, group_key))
+    limn_id = limn_name.replace(' ', '_').lower()
+    limn_id = re.sub('\W', '', limn_id)
+    limnpy.writedicts(limn_id, limn_name, limn_rows)
+
 
 def main():
     opts = parse_args()
@@ -77,10 +84,13 @@ def main():
                  
     for group_key, (val_key, date_key) in itertools.product(group_keys, val_date_keys):
         logging.debug('grouping by (%s, %s), summed %s', group_key, date_key, val_key)
-        grouped = all_rows.groupby([group_key, date_key]).sum()
-        logging.debug('grouped:\n%s', grouped)
-        limnify(grouped)
+        pt = all_rows.pivot_table(values=val_key, rows=date_key, cols=group_key, aggfunc=sum)
+        pt = pt.fillna(0)
+        pt_cum = pt.cumsum()
 
+        write_limn_files(pt, val_key, group_key)
+        write_limn_files(pt_cum, 'Cumulative ' + val_key, group_key)
+    
     logger.debug('len(all_rows) : %s, type(all_rows): %s, all_rows: %s', len(all_rows), type(all_rows), all_rows)
 
 if __name__ == '__main__':
