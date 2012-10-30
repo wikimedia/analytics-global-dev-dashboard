@@ -1,6 +1,7 @@
 import pandas as pd
 import csv
 import limnpy
+import datetime
 
 stats_fn='/a/wikistats/csv/csv_wp/StatisticsMonthly.csv'
 
@@ -48,7 +49,7 @@ for val_key in val_keys:
     pt = df.pivot(index='date', columns='project', values=val_key)
     pt = pt.fillna(0)
     idx = pt.index
-    pt_rows = [[idx[i]] + list(pt.irow(i)) for i in range(len(pt))]
+    pt_rows = [[datetime.datetime.strptime(idx[i],'%m/%d/%Y')] + list(pt.irow(i)) for i in range(len(pt))]
     limn_id = 'overall_%s' % val_key
     limn_name = limn_id.replace('_', ' ').title()
     limnpy.write(limn_id, limn_name, ['date'] + list(pt.columns), pt_rows)
