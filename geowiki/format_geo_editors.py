@@ -8,8 +8,8 @@ import operator
 from operator import itemgetter
 import re
 import os
-#import MySQLdb as sql
-import sqlite3 as sql
+import MySQLdb as sql
+#import sqlite3 as sql
 import MySQLdb.cursors
 from profilehooks import profile
 import multiprocessing
@@ -220,6 +220,7 @@ def write_project_top_k(proj, rows, basedir, k=10):
 
 
 def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
+    logging.debug('entering')
     limn_id = proj + '_top%d' % k
     limn_name = '%s Editors by Country (top %d)' % (proj.upper(), k)
 
@@ -233,17 +234,31 @@ def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
                     FROM erosen_geocode_active_editors_country
                     WHERE project=%s AND cohort='all'
                     ORDER BY count DESC LIMIT %s"""
-    cursor.execute(top_k_query, (proj, k)) # mysqldb first converst all args to str
-    top_k = cursor.fetchall()
-    top_k_str = ','.join(map(itemgetter('country'), top_k))
-    
+        logging.debug('top k query: %s', top_k_query % (proj, k))
+    cursor.execute(top_k_query, (proj, k)) # mysqldb first converts all args to str
+    top_k = map(itemgetter('country'), cursor.fetchall())
+    logging.debug('proj: %s, top_k countries: %s', proj, top_k)
+    if not top_k:
+        logging.warning('not country edits found for proj: %s', proj)
+        return
+
     if sql.paramstyle == 'qmark':
-        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=? AND country IN (?)"""
+        country_fmt = ', '.join([' ? ']*len(top_k))
+        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=? AND country IN %s"""
+        query = query % country_fmt
     elif sql.paramstyle == 'format':
-        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=%s AND country IN (%s)"""
-    cursor.execute(query, (proj, top_k_str))
+        country_fmt = '(%s)' % ', '.join([' %s ']*len(top_k))
+        logging.debug('country_fmt: %s', country_fmt)
+        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=%s AND country IN """
+        query = query + country_fmt
+        args = [proj]
+        args.extend(top_k)
+        print_query = query % tuple(args)
+        logging.debug('top_k edit count query: %s', print_query)
+    cursor.execute(query, [proj,] + top_k)
     proj_rows = cursor.fetchall()
 
+    logging.debug('retrieved %d rows', len(proj_rows))
     limn_rows = make_limn_rows(proj_rows, 'country')
     s = limnpy.writedicts(limn_id, limn_name, limn_rows, basedir=basedir)
     write_default_graphs(s, limn_id, limn_name, basedir)
@@ -326,6 +341,7 @@ def write_group_mysql(group_key, country_data, cursor, basedir):
                          FROM erosen_geocode_active_editors_country
                          WHERE country IN (%s)
                          GROUP BY end, cohort"""
+            countries_fmt = ', '.join([' %s ']*len(countries))
         group_query_fmt = group_query % countries_fmt
         cursor.execute(group_query_fmt, tuple(countries))
         group_rows = cursor.fetchall()
@@ -415,9 +431,9 @@ def process_project(project, cursor, basedir):
 if __name__ == '__main__':
     args = parse_args()
 
-    # db = MySQLdb.connect(read_default_file=os.path.expanduser('~/.my.cnf.research'), db='staging', cursorclass=MySQLdb.cursors.DictCursor)
-    db = sql.connect('/home/erosen/src/editor-geocoding/geowiki.sqlite')
-    db.row_factory = sql.Row
+    db = MySQLdb.connect(read_default_file=os.path.expanduser('~/.my.cnf.research'), db='staging', cursorclass=MySQLdb.cursors.DictCursor)
+    # db = sql.connect('/home/erosen/src/editor-geocoding/geowiki.sqlite')
+    # db.row_factory = sql.Row
     cursor = db.cursor()
 
     projects = get_projects()
@@ -429,7 +445,7 @@ if __name__ == '__main__':
         pool = multiprocessing.Pool(10)
         pool.map_async(process_project_par, itertools.izip(projects, itertools.repeat(args.basedir))).get(99999)
 
-    # write_overall_mysql(projects, cursor, args.basedir)
+    write_overall_mysql(projects, cursor, args.basedir)
 
     # use metadata from Google Drive doc which lets us group by country
     country_data = gcat.get_file('Global South and Region Classifications', sheet='data', fmt='dict', usecache=True)
