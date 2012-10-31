@@ -39,17 +39,18 @@ val_keys = ['total_editors',
               'num_links_external',
               'num_links_redirects']
 
+df = pd.read_csv(stats_fn, names=fieldnames, parse_dates=['date'])
+df['date'] = df['date'].apply(datetime.datetime.date)
 
-
-rdr = csv.reader(open(stats_fn))
-lines = [line for line in rdr]
-df = pd.DataFrame(lines,columns=fieldnames)
+indic_lang_df = pd.read_csv('../data/indic_lang_ids.tsv', names=['id','name'], sep='\t', comment='#')
+indic_langs = indic_lang_df['id'].dropna().unique()
 
 for val_key in val_keys:
     pt = df.pivot(index='date', columns='project', values=val_key)
     pt = pt.fillna(0)
-    idx = pt.index
-    pt_rows = [[datetime.datetime.strptime(idx[i],'%m/%d/%Y')] + list(pt.irow(i)) for i in range(len(pt))]
     limn_id = 'overall_%s' % val_key
-    limn_name = limn_id.replace('_', ' ').title()
-    limnpy.write(limn_id, limn_name, ['date'] + list(pt.columns), pt_rows)
+    limnpy.write(limn_id, limn_id.replace('_', ' ').title(), list(pt.reset_index().columns), pt.itertuples())
+
+    indic_pt = pt[indic_langs].fillna(0).sum(axis=1)
+    indic_limn_id = 'indic_language_%s' % val_key
+    limnpy.write(indic_limn_id, indic_limn_id.replace('_', ' ').title(), list(indic_pt.reset_index().columns), indic_pt.iteritems())
