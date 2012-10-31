@@ -12,13 +12,16 @@ import logging
 import pprint
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
+import csv
 import re
 import cProfile
-from collections import defaultdict
+from collections import defaultdict, Counter
 from operator import itemgetter
 from nesting import Nest
 import simplejson as json
 import itertools
+import pandas as pd
+import os.path
 
 import limnpy
 
@@ -125,17 +128,10 @@ class TrafficCounter(SquidProcessor):
         limn_name = '%s Partner Report' % partner_name
         source = limnpy.write(limn_id, limn_name, ['date', 'Main (X)', 'Mobile (M)', 'Zero (Z)'], limn_rows)
         limnpy.writegraph(limn_id, limn_name, [source])
-
+        return source
 
 
 def parse_args():
-    """
-    support output file selection
-    max number of lines for debugging
-    log level
-    """
-    
-
     parser = SquidArgumentParser(description='Process a collection of squid logs and write certain extracted metrics to file')
     parser.add_argument('providers', 
                         metavar='PROVIDER_IDENTIFIER',
@@ -163,14 +159,30 @@ def parse_args():
     logging.info(pprint.pformat(args.__dict__))
     return args
 
+
+def write_total(datasources):
+    paths = []
+    for datasource in datasources.values():
+        url = datasource['url']
+        logging.info('url: %s', url)
+        paths.append(os.path.join('datafiles', os.path.split(url)[1]))
+
+    logging.info('joining files: %s', paths)
+    long_fmt = pd.concat([pd.read_csv(path) for path in paths])
+    final = long_fmt.groupby('date').sum()
+    limnpy.write('mobile_traffic_by_version', 'Mobile Traffic by Version', list(final.reset_index().columns), final.itertuples())
+
+
 def main():
     args = parse_args()
 
+    datasources = {}
     for prov in args.providers:
         processors = [TrafficCounter(prov, args)]
         manager = ProcessManager(args.squid_files[prov], processors, options=args)
-        manager.process_files_par()
-
+        res = manager.process_files_par()
+        datasources[prov] = res[0] # should only be as many elements in res as there are processors (i.e. 1)
+    write_total(datasources)
 
 if __name__ == '__main__':
     #main()
