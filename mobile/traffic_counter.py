@@ -23,7 +23,7 @@ import itertools
 import pandas as pd
 import os.path
 
-import limnpy
+import limnpy, gcat
 
 DEFAULT_PROVIDERS = ['zero-digi-malaysia',
                      'zero-grameenphone-bangladesh',
@@ -35,6 +35,7 @@ DEFAULT_PROVIDERS = ['zero-digi-malaysia',
                      'zero-orange-ivory-coast',
                      'zero-telenor-montenegro',
                      'zero-tata-india',
+                     'zero-dtac-thailand',
                      'zero-saudi-telecom']
 
 
@@ -161,14 +162,26 @@ def parse_args():
 
 
 def write_total(datasources):
-    paths = []
-    for datasource in datasources.values():
+    vm = gcat.get_file('WP Zero Partner - Versions', fmt='pandas')
+    vm = vm.set_index(vm['Partner Identifier'])
+    names = {'M' : 'Mobile (M)', 'Z' : 'Zero (Z)', 'X' : 'Main (X)'}
+    logging.info('type(vm.ix[1,\'Start Date\']: %s', type(vm.ix[1,'Start Date']))
+
+    dfs = []
+    for pid, datasource in datasources.items():
         url = datasource['url']
         logging.info('url: %s', url)
-        paths.append(os.path.join('datafiles', os.path.split(url)[1]))
+        path = os.path.join('datafiles', os.path.split(url)[1])
+        df = pd.read_csv(path, parse_dates=[0])
+        df = df.set_index(df['date'])
+        valid_df = df.ix[df.index > vm.ix[pid, 'Start Date']]
 
-    logging.info('joining files: %s', paths)
-    long_fmt = pd.concat([pd.read_csv(path) for path in paths])
+        free_versions = set(map(names.get, map(unicode.strip, vm.ix[pid, 'Version'].split(','))))
+        ignore_versions = list(set(names.values()) - free_versions)
+        df[ignore_versions] = 0
+        dfs.append(valid_df)
+        
+    long_fmt = pd.concat(dfs)
     final = long_fmt.groupby('date').sum()
     limnpy.write('mobile_traffic_by_version', 'Mobile Traffic by Version', list(final.reset_index().columns), final.itertuples())
 
