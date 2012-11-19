@@ -162,7 +162,7 @@ def parse_args():
 
 
 def write_total(datasources):
-    vm = gcat.get_file('WP Zero Partner - Versions', fmt='pandas')
+    vm = gcat.get_file('WP Zero Partner - Versions', fmt='pandas', usecache=True)
     vm = vm.set_index(vm['Partner Identifier'])
     names = {'M' : 'Mobile (M)', 'Z' : 'Zero (Z)', 'X' : 'Main (X)'}
     logging.info('type(vm.ix[1,\'Start Date\']: %s', type(vm.ix[1,'Start Date']))
@@ -172,18 +172,26 @@ def write_total(datasources):
         url = datasource['url']
         logging.info('url: %s', url)
         path = os.path.join('datafiles', os.path.split(url)[1])
-        df = pd.read_csv(path, parse_dates=[0])
+        logging.debug('using datasource at: %s', path)
+        df = pd.read_csv(path, parse_dates=[0], date_parser=lambda dstr : datetime.datetime.strptime(dstr, limnpy.limn_date_fmt))
         df = df.set_index(df['date'])
-        valid_df = df.ix[df.index > vm.ix[pid, 'Start Date']]
+        start_date = vm.ix[pid, 'Start Date']
+        if not start_date:
+            continue
+        valid_df = df.ix[df.index > start_date]
 
         free_versions = set(map(names.get, map(unicode.strip, vm.ix[pid, 'Version'].split(','))))
         ignore_versions = list(set(names.values()) - free_versions)
-        df[ignore_versions] = 0
+        valid_df[ignore_versions] = 0
         dfs.append(valid_df)
         
     long_fmt = pd.concat(dfs)
     final = long_fmt.groupby('date').sum()
-    limnpy.write('mobile_traffic_by_version', 'Mobile Traffic by Version', list(final.reset_index().columns), final.itertuples())
+    final.index = final.index.map(lambda ts : ts.to_pydatetime())
+    cols = list(final.reset_index().columns)
+    rows = list(final.itertuples())
+    limnpy.write('mobile_traffic_by_version', 'Mobile Traffic by Version', cols, rows)
+
 
 
 def main():

@@ -161,7 +161,7 @@ def write_default_graphs(source, limn_id, limn_name, basedir):
         for cohort_str, cohort_id, cohort_name in cohorts:
             cols = [name for name in source['columns']['labels'] if re.match('.*%s.*' % cohort_str, name)]
             source_cols = list(itertools.product([source_id], cols))
-            limnpy.writegraph(limn_id + '_' + cohort_id, cohort_name + ' ' + limn_name, [source], source_cols, basedir=basedir)
+            limnpy.write_graph(limn_id + '_' + cohort_id, cohort_name + ' ' + limn_name, [source], source_cols, basedir=basedir)
 
 
 
@@ -173,7 +173,8 @@ def write_project(proj, rows, basedir):
     proj_rows = rows.find({'project' : proj})
     logging.debug('len(proj_rows): %d', len(proj_rows))
     limn_rows = make_limn_rows(proj_rows, 'country')
-    limnpy.writedicts(limn_id, name, limn_rows, basedir=basedir)
+    source = limnpy.DataSource(limn_id, name, limn_rows)
+    source.write(basedir=basedir)
 
 
 def write_project_mysql(proj, cursor, basedir):
@@ -192,9 +193,12 @@ def write_project_mysql(proj, cursor, basedir):
     logging.debug('len(proj_rows): %d', len(proj_rows))
     if not proj_rows and sql.paramstyle == 'format':
         logging.debug('GOT NUTHIN!: %s', query % proj)
+        return
     limn_rows = make_limn_rows(proj_rows, 'country')
-    s = limnpy.writedicts(limn_id, limn_name, limn_rows, basedir=basedir)
-    write_default_graphs(s, limn_id, limn_name, basedir)
+    source = limnpy.DataSource(limn_id, limn_name, limn_rows)
+    source.write(basedir=basedir)
+    source.write_graph(basedir=basedir)
+
 
 def top_k_countries(rows, k, probe):
     filtered_rows = Collection(rows.find(probe))
@@ -215,8 +219,9 @@ def write_project_top_k(proj, rows, basedir, k=10):
     top_k = top_k_countries(rows, k, {'project' : proj, 'cohort' : 'all'})
     proj_rows = rows.find({'country' : top_k, 'project' : proj})
     limn_rows = make_limn_rows(proj_rows, 'country')
-    s = limnpy.writedicts(limn_id, name, limn_rows, basedir=basedir)
-    write_default_graphs(s, limn_id, limn_name, basedir)
+    source = limnpy.DataSource(limn_id, name, limn_rows)
+    source.write(basedir=basedir)
+    source.write_graph(basedir=basedir)
 
 
 def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
@@ -260,8 +265,9 @@ def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
 
     logging.debug('retrieved %d rows', len(proj_rows))
     limn_rows = make_limn_rows(proj_rows, 'country')
-    s = limnpy.writedicts(limn_id, limn_name, limn_rows, basedir=basedir)
-    write_default_graphs(s, limn_id, limn_name, basedir)
+    source = limnpy.DataSource(limn_id, limn_name, limn_rows)
+    source.write(basedir=basedir)
+    source.write_graph(basedir=basedir)
 
 
 def write_overall(projects, rows, basedir):
@@ -272,8 +278,9 @@ def write_overall(projects, rows, basedir):
     overall_rows = rows.find({'world' : True})
     limn_rows = make_limn_rows(overall_rows, 'project')
     #logging.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
-    s = limnpy.writedicts(limn_id, name, limn_rows, basedir=basedir)
-    write_default_graphs(s, limn_id, limn_name, basedir)
+    source = limnpy.DataSource(limn_id, name, limn_rows)
+    source.write(basedir=basedir)
+    source.write_graph(basedir=basedir)
 
 
 def write_overall_mysql(projects, cursor, basedir):
@@ -281,14 +288,20 @@ def write_overall_mysql(projects, cursor, basedir):
     limn_id = 'overall_by_lang'
     limn_name = 'Overall Editors by Language'
 
-    query = """ SELECT * FROM erosen_geocode_active_editors_world"""
-    cursor.execute(query) # mysqldb first converst all args to str
+    query = """ SELECT * FROM erosen_geocode_active_editors_world_test"""
+    cursor.execute(query)
     overall_rows = cursor.fetchall()
     
     limn_rows = make_limn_rows(overall_rows, 'project')
+    monthly_limn_rows = filter(lambda r: r['date'].day==1, limn_rows)
     #logging.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
-    s = limnpy.writedicts(limn_id, limn_name, limn_rows, basedir=basedir)
-    write_default_graphs(s, limn_id, limn_name, basedir)
+    source = limnpy.DataSource(limn_id, limn_name, limn_rows)
+    source.write(basedir=basedir)
+    source.write_graph(basedir=basedir)
+
+    monthly_source = limnpy.DataSource(limn_id+'_monthly', limn_name+' Monthly', monthly_limn_rows)
+    monthly_source.write(basedir=basedir)
+
 
 
 
@@ -354,8 +367,9 @@ def write_group_mysql(group_key, country_data, cursor, basedir):
     limn_rows = make_limn_rows(all_rows, group_key, count_key='SUM(count)')
     limn_id = group_key.replace(' ', '_').lower()
     limn_name = group_key.title()
-    s = limnpy.writedicts(limn_id, limn_name, limn_rows, basedir=basedir)
-    write_default_graphs(s, limn_id, limn_name, basedir)
+    source = limnpy.DataSource(limn_id, limn_name, limn_rows)
+    source.write(basedir=basedir)
+    source.write_graph(basedir=basedir)
 
 
 def write_group(group_key, rows, basedir):
@@ -364,7 +378,9 @@ def write_group(group_key, rows, basedir):
         logging.warning('group_rows for group_key: %s is empty! (group_rows: %s)', group_key, group_rows)
     limn_rows = make_limn_rows(group_rows, group_key)
     if limn_rows:
-        limnpy.writedicts(group_key.replace(' ', '_').lower(), group_key.replace('_', ' ').title(), limn_rows, basedir=basedir)
+        source = limnpy.DataSource(group_key.replace(' ', '_').lower(), group_key.replace('_', ' ').title(), limn_rows)
+        source.write(basedir=basedir)
+        source.write_graph(basedir=basedir)
     else:
         logging.warning('limn_rows for group_key: %s is empty! (limn_rows: %s)', group_key, limn_rows)
 
@@ -447,12 +463,12 @@ if __name__ == '__main__':
 
     write_overall_mysql(projects, cursor, args.basedir)
 
-    # use metadata from Google Drive doc which lets us group by country
-    country_data = gcat.get_file('Global South and Region Classifications', sheet='data', fmt='dict', usecache=True)
-    logging.debug('typ(country_data): %s', type(country_data))
-    logging.info('country_data[0].keys: %s', country_data[0].keys())
+    # # use metadata from Google Drive doc which lets us group by country
+    # country_data = gcat.get_file('Global South and Region Classifications', sheet='data', fmt='dict', usecache=True)
+    # logging.debug('typ(country_data): %s', type(country_data))
+    # logging.info('country_data[0].keys: %s', country_data[0].keys())
 
-    write_group_mysql('country', country_data, cursor, args.basedir)
-    write_group_mysql('region', country_data, cursor, args.basedir)
-    write_group_mysql('global_south', country_data, cursor, args.basedir)
-    write_group_mysql('catalyst', country_data, cursor, args.basedir)
+    # write_group_mysql('country', country_data, cursor, args.basedir)
+    # write_group_mysql('region', country_data, cursor, args.basedir)
+    # write_group_mysql('global_south', country_data, cursor, args.basedir)
+    # write_group_mysql('catalyst', country_data, cursor, args.basedir)

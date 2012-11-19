@@ -1,8 +1,7 @@
-cd ../dashboard-data
-git rm -r --force datafiles/* datasources/* graphs/*
-mkdir datafiles datasources graphs
-
-cd ../dashboard
+# cd ../dashboard-data
+# git rm -r --force datafiles/* datasources/* graphs/*
+# mkdir datafiles datasources graphs
+# cd ../dashboard
 
 for source in "geowiki" "grants" "mobile" "historical"
 do
