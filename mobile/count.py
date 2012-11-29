@@ -9,7 +9,7 @@ formatter = logging.Formatter('[%(levelname)-5.5s][%(name)-10.10s][%(processName
 
 ch.setFormatter(formatter)
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG)
+root_logger.setLevel(logging.INFO)
 root_logger.addHandler(ch)
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ DEFAULT_PROVIDERS = ['digi-malaysia',
                      'saudi-telecom',
                      'dtac-thailand']
 
-PROVIDER_COUNTRIES_CODES = {'digi-malaysia' : 'MY',
+PROVIDER_COUNTRY_CODES = {'digi-malaysia' : 'MY',
              'grameenphone-bangladesh' : 'BD',
              'orange-kenya' : 'KE',
              'orange-niger' : 'NE',
@@ -187,7 +187,7 @@ def make_sampled_source(counts, basedir):
                                              daily_country_counts_limn)
     daily_country_source.write(basedir)
 
-    monthly_country_counts = country_counts_limn.resample(rule='M', how='sum', label='right')
+    monthly_country_counts = daily_country_counts_limn.resample(rule='M', how='sum', label='right')
     monthly_country_source = limnpy.DataSource('monthly_mobile_views_by_country',
                                                'Monthly Mobile Views By Country',
                                                monthly_country_counts)
@@ -213,6 +213,7 @@ def make_zero_sources(counts, provider, basedir):
                                              '%s Daily Version Counts' % provider_title,
                                              daily_version_limn)
     daily_version_source.write(basedir)
+    logger.debug('daily_version_source: %s', daily_version_source)
 
     monthly_version = daily_version_limn.resample(rule='M', how='sum', label='right')
     # logger.debug('monthly_version:\n%s', monthly_version)
@@ -223,22 +224,64 @@ def make_zero_sources(counts, provider, basedir):
     return daily_version_source, monthly_version_source
 
 
+def make_percent_sources(provider, 
+                          daily_country_source, 
+                          monthly_country_source, 
+                          daily_version_source, 
+                          monthly_version_source,
+                          basedir):
+    provider_underscore = provider.replace('-','_')
+    provider_title = provider.replace('-',' ').title()
+
+    cc = PROVIDER_COUNTRY_CODES[provider]
+    country = COUNTRY_NAMES[cc]
+
+    logger.debug('type(daily_version_source.__data__: %s)', type(daily_version_source.__data__))
+    # logger.debug('daily_version_source.__data__: %s', daily_version_source.__data__)
+    if 'M' not in daily_version_source.__data__.columns or 'Z' not in daily_version_source.__data__.columns:
+        logger.warning('skipping count graphs for provider %s because M or Z column is missing from daily_version_source', provider)
+        return None, None
+    percent_df = daily_version_source.__data__[['M', 'Z']].sum(axis=1)
+    logger.debug('type(percent_df): %s', type(percent_df))
+    percent_df = pd.DataFrame(percent_df / daily_country_source.__data__[cc])
+    percent_df = percent_df * 100
+    percent_df = percent_df.reset_index()
+    percent_df.columns = ['date', 'country_percent']
+    logger.debug('type(percent_df): %s', type(percent_df))
+    logger.debug('percent_df (meta):\n%s', percent_df)
+    logger.debug('percent_df (data):\n%s', percent_df[:10])
+    daily_percent_source = limnpy.DataSource('%s_daily_country_percent' % provider_underscore,
+                                              '%s Daily Country Percent' % provider_title,
+                                              percent_df)
+    daily_percent_source.write(basedir)
+
+    monthly_percent_source = limnpy.DataSource('%s_monthly_country_percent' % provider_underscore,
+                                                '%s Monthly Country Percent' % provider_title,
+                                                percent_df.resample(rule='M', how='sum', label='right'))
+    monthly_percent_source.write(basedir)
+    
+    return daily_percent_source, monthly_percent_source
+
+
 def make_graphs(counts, sampled_counts, providers, basedir):
-    daily_country_source, monthtly_coountry_source = make_sampled_source(counts, basedir)
+    daily_country_source, monthly_country_source = make_sampled_source(counts, basedir)
     for provider in providers:
-        daily_version_source, monthtly_version_source = make_zero_sources(counts, prov, basedir)
-        if daily_version_source is None:
-            continue
 
         provider_title = provider.replace('-', ' ').title()
         provider_underscore = provider.replace('-', '_')
 
 
-        # construct dashboard object
+        # construct dashboard object #################################
         name = '%s Wikipedia Zero Dashboard' % provider_title
         db = limnpy.Dashboard(provider, name, headline=provider_title, subhead='Wikipedia Zero Dashboard')
 
-        # main tab
+        daily_version_source, monthly_version_source = make_zero_sources(counts, provider, basedir)
+        if daily_version_source is None:
+            logger.warning('daily_version_source is None; skipping %s', provider)
+            db.write(basedir)
+            continue
+
+        # main tab ###################################################
         daily_version_graph = daily_version_source.get_graph(['Z','M'])
         daily_version_graph.__graph__['options']['stackedGraph'] = True
         daily_version_graph.write(basedir)
@@ -249,30 +292,48 @@ def make_graphs(counts, sampled_counts, providers, basedir):
 
         db.add_tab('Versions', [daily_version_graph.__graph__['slug'], monthly_version_graph.__graph__['slug']])
 
+
+        logger.debug('starting to create country count tabs')
         cc = PROVIDER_COUNTRY_CODES[provider]
         country = COUNTRY_NAMES[cc]
 
-        # country raw tab
+
+        # country raw tab ############################################
         # def __init__(self, id, title, sources, metric_ids=None, slug=None):
         daily_country_graph = limnpy.Graph('%s_daily_country_total' % provider_underscore,
                                            '%s Daily Views Raw' % country,
+                                           sources=[daily_version_source, daily_country_source],
                                            metric_ids=[(daily_version_source.__source__['id'], 'M'),
                                                        (daily_country_source.__source__['id'], cc)])
+        logger.debug('constructed daily_country_graph')
         monthly_country_graph = limnpy.Graph('%s_monthly_country_total' % provider_underscore,
                                            '%s Monthly Views Raw' % country,
+                                           sources=[monthly_version_source, monthly_country_source],
                                            metric_ids=[(monthly_version_source.__source__['id'], 'M'),
                                                        (monthly_country_source.__source__['id'], cc)])
 
-        db.add_tab('Country Raw', [daily_country_graph.__graph__['id'], monthly_country_graph.__graph__['id']])
-        db.write(basedir)
+        logger.debug('constructed monthly_country_graph')
+        db.add_tab('Country Raw', [daily_country_graph.__graph__['slug'], monthly_country_graph.__graph__['slug']])
 
-        daily_fraction_source = limnpy.DataSource('%s_daily_country_fraction' % provider_underscore,
-                                                  '%s Daily Country Fraction' % provider_title,
-                                                  daily_version_source.__source__[['M', 'Z']].sum(axis=1) / daily_country_source.__source__[cc])
 
-        #country fraction tab
-        daily_country_source
-        db.add_tab('Country Fraction')#, ['%s_fraction_daily', '%s_fraction_monthly'])
+        # country percent tab ########################################
+        daily_percent_source, monthly_percent_source = make_percent_sources(provider, 
+                                                                               daily_country_source,
+                                                                               monthly_country_source,
+                                                                               daily_version_source,
+                                                                               monthly_version_source,
+                                                                               basedir)
+        if daily_percent_source is None:
+            logger.warning('daily_percent_source is None; skipping %s', provider)
+            continue
+
+        daily_percent_graph = daily_percent_source.get_graph()
+        daily_percent_graph.write(basedir)
+
+        monthly_percent_graph = monthly_percent_source.get_graph()
+        monthly_percent_graph.write(basedir)
+
+        db.add_tab('Country Percent', [daily_percent_graph.__graph__['slug'], monthly_percent_graph.__graph__['slug']])
         db.write(basedir)
         
 
