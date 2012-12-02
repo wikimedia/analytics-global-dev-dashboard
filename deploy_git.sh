@@ -5,9 +5,9 @@
 
 for source in "geowiki" "grants" "mobile" "historical"
 do
-    for type in "datasources" "datafiles" "graphs"
+    for type in "dashboards" "datasources" "datafiles" "graphs"
     do
-	cp $source/$type/* ../dashboard-data/$type
+	cp $source/data/$type/* ../dashboard-data/$type
     done
 done
 
