@@ -12,6 +12,7 @@ do
 done
 
 cd ../dashboard-data
+git pull
 git add *
 git commit -m 'automatic update using dashboard deploy_git.sh script'
 git push

@@ -78,7 +78,9 @@ LEVELS = {'DEBUG': logging.DEBUG,
           'ERROR': logging.ERROR,
           'CRITICAL': logging.CRITICAL}
 
-VERSIONS = ['X', 'M', 'Z']
+SQUID_DATE_FMT = '%Y%m%d'
+
+VERSIONS = {'X' : 'X : Main', 'M' : 'M : Mobile', 'Z' : 'Z : Zero'}
 
 FIELDS = ['date', 'lang', 'project', 'site', 'country', 'provider']
 COUNT_FIELDS = ['count'] + FIELDS
@@ -158,6 +160,37 @@ def get_files(datadir):
     return match_files
 
 
+def get_missing_files(cache_dir):
+    dates = []
+    fnames = os.listdir(cache_dir)
+    for f in fnames:
+        m = re.match('.*\.log-(\d{8}).*', f)
+        if m:
+            dates.append(m.groups(1)[0])
+        else:
+            logger.warning('failed to parse date from filename: %s', f)
+    start = min(dates)
+    end = max(dates)
+    drange = pd.date_range(start, end)
+    drange_str = map(lambda d : d.strftime(SQUID_DATE_FMT), drange)
+    missing = list(set(drange_str) - set(dates))
+    if missing:
+        logger.warning('found %d missing dates in cache_dir: %s, missing dates:\n%s', len(missing), cache_dir, missing)
+    return missing
+    
+
+def clear_missing_days(cache, missing):
+    orig = cache
+    for dstr in missing:
+        d = datetime.datetime.strptime(dstr, SQUID_DATE_FMT)
+        logger.debug('cache[cache.date == d]: %s', cache[cache.date == d])
+        cache = cache[cache.date != d]
+    if len(cache) != len(orig):
+        logger.debug('entered with cache: %s', orig)
+        logger.debug('exiting with cache: %s', cache)
+    return cache
+
+
 def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only):
     cache = pd.DataFrame(columns=COUNT_FIELDS)
     date_col_ind = COUNT_FIELDS.index('date')
@@ -176,6 +209,9 @@ def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only):
                 logger.exception('exception caught while loading cache file: %s', count_file)
     logger.debug('cache:\n%s', cache)
 
+    missing = get_missing_files(cache_dir)
+    cache = clear_missing_days(cache, missing)
+
     if not cache_only:
         files = get_files(basedir)
         # -7 because '.counts' is 7 chars long
@@ -188,6 +224,7 @@ def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only):
 
     # scale to compensate for filtering
     counts['count'] = counts['count'] * sample_rate
+    counts = counts[counts['project'] == 'wikipedia']
     # logger.debug('counts:\n%s', counts[:10])
     return counts
 
@@ -196,14 +233,17 @@ def make_sampled_source(counts, basedir):
     daily_country_counts = counts.groupby(['country', 'date'], as_index=False).sum()
     logger.debug('daily_country_counts: %s', daily_country_counts)
     daily_country_counts_limn = daily_country_counts.pivot('date', 'country', 'count')
-    daily_country_source = limnpy.DataSource('daily_mobile_views_by_country',
-                                             'Daily Mobile Views By Country',
+    daily_country_counts_limn = daily_country_counts_limn.rename(columns=COUNTRY_NAMES)
+    daily_country_counts_limn = daily_country_counts_limn[:-1]
+    daily_country_source = limnpy.DataSource('daily_mobile_wp_views_by_country',
+                                             'Daily Mobile WP Views By Country',
                                              daily_country_counts_limn)
     daily_country_source.write(basedir)
 
     monthly_country_counts = daily_country_counts_limn.resample(rule='M', how='sum', label='right')
-    monthly_country_source = limnpy.DataSource('monthly_mobile_views_by_country',
-                                               'Monthly Mobile Views By Country',
+    monthly_country_counts = monthly_country_counts[:-1]
+    monthly_country_source = limnpy.DataSource('monthly_mobile_wp_views_by_country',
+                                               'Monthly Mobile WP Views By Country',
                                                monthly_country_counts)
     monthly_country_source.write(basedir)
     return daily_country_source, monthly_country_source
@@ -213,8 +253,8 @@ def make_zero_sources(counts, provider, basedir):
     provider_underscore = provider.replace('-','_')
     provider_title = provider.replace('-',' ').title()
 
-    logger.debug('counts:\n%s', counts)
-    logger.debug('counts.columns: %s', counts.columns)
+    # logger.debug('counts:\n%s', counts)
+    # logger.debug('counts.columns: %s', counts.columns)
 
     # HACK TO FIX SPELLING ERRER in orange-tunisia udp-filter
     provider_id = provider if provider != 'orange-tunisia' else 'orange-tunesia'
@@ -225,14 +265,17 @@ def make_zero_sources(counts, provider, basedir):
 
     daily_version = prov_counts.groupby(['date', 'site'], as_index=False).sum()
     daily_version_limn = daily_version.pivot('date', 'site', 'count')
-    daily_version_source = limnpy.DataSource('%s_daily_version' % provider_underscore,
-                                             '%s Daily Version Counts' % provider_title,
+    daily_version_limn = daily_version_limn.rename(columns=VERSIONS)
+    daily_version_limn = daily_version_limn[:-1]
+    daily_version_source = limnpy.DataSource('%s_daily_wp_view_by_version' % provider_underscore,
+                                             '%s Daily WP Views By Version' % provider_title,
                                              daily_version_limn)
     daily_version_source.write(basedir)
 
     monthly_version = daily_version_limn.resample(rule='M', how='sum', label='right')
-    monthly_version_source = limnpy.DataSource('%s_monthly_version' % provider_underscore,
-                                               '%s Monthly Version Counts' % provider_title,
+    monthly_version = monthly_version[:-1]
+    monthly_version_source = limnpy.DataSource('%s_monthly_wp_views_by_version' % provider_underscore,
+                                               '%s Monthly WP View By Version' % provider_title,
                                                monthly_version.reset_index())
     monthly_version_source.write(basedir)
     return daily_version_source, monthly_version_source
@@ -257,23 +300,25 @@ def make_raw_sources(provider,
 
     # joins on date index because limnpy.DataSource DataFrames are always indexed on date
     daily_raw_df = pd.merge(daily_version_source.__data__,
-                            pd.DataFrame(daily_country_source.__data__[cc]),
+                            pd.DataFrame(daily_country_source.__data__[country]),
                             left_index=True, right_index=True)
     # add a combined M + Z source
-    if 'M' in daily_raw_df.columns and 'Z' in daily_raw_df.columns:
-        daily_raw_df['M + Z'] = daily_raw_df['M'] + daily_raw_df['Z']
-    daily_raw_source = limnpy.DataSource('%s_daily_country_views' % provider_underscore,
-                                         '%s Daily Country Views' % provider_title,
+    if VERSIONS['M'] in daily_raw_df.columns and VERSIONS['Z'] in daily_raw_df.columns:
+        daily_raw_df['M + Z : Mobile + Zero'] = daily_raw_df[VERSIONS['M']] + daily_raw_df[VERSIONS['Z']]
+    daily_raw_df = daily_raw_df[:-1]
+    daily_raw_source = limnpy.DataSource('%s_daily_wp_views_with_country' % provider_underscore,
+                                         '%s Daily WP Views With Total %s WP Views' % (provider_title, country),
                                          daily_raw_df)
     daily_raw_source.write(basedir)
 
     monthly_raw_df = pd.merge(monthly_version_source.__data__, 
-                              pd.DataFrame(monthly_country_source.__data__[cc]),
+                              pd.DataFrame(monthly_country_source.__data__[country]),
                               left_index=True, right_index=True)
-    if 'M' in monthly_raw_df.columns and 'Z' in monthly_raw_df.columns:
-        monthly_raw_df['M + Z'] = monthly_raw_df['M'] + monthly_raw_df['Z']
-    monthly_raw_source = limnpy.DataSource('%s_monthly_country_views' % provider_underscore,
-                                           '%s Monthly Country Views' % provider_title,
+    if VERSIONS['M'] in monthly_raw_df.columns and VERSIONS['Z'] in monthly_raw_df.columns:
+        monthly_raw_df['M + Z : Mobile + Zero'] = monthly_raw_df[VERSIONS['M']] + monthly_raw_df[VERSIONS['Z']]
+    monthly_raw_df = monthly_raw_df[:-1]
+    monthly_raw_source = limnpy.DataSource('%s_monthly_wp_views_with_country' % provider_underscore,
+                                           '%s Monthly WP Views With Total %s WP Views' % (provider_title, country),
                                            monthly_raw_df)
     monthly_raw_source.write(basedir)
 
@@ -292,35 +337,32 @@ def make_percent_sources(provider,
 
     cc = PROVIDER_COUNTRY_CODES[provider]
     country = COUNTRY_NAMES[cc]
-    available_versions = list(set(['M', 'Z']) & set(daily_version_source.__data__.columns))
+    available_versions = list(set([VERSIONS['M'], VERSIONS['Z']]) & set(daily_version_source.__data__.columns))
 
     logger.debug('type(daily_version_source.__data__: %s)', type(daily_version_source.__data__))
     # logger.debug('daily_version_source.__data__: %s', daily_version_source.__data__)
-    # if 'M' not in daily_version_source.__data__.columns and 'Z' not in daily_version_source.__data__.columns:
-    #     logger.warning('skipping count graphs for provider %s because M and Z column are missing from daily_version_source', provider)
-    #     return None, None
 
     daily_percent_df = daily_version_source.__data__[available_versions].sum(axis=1)
     # doesn't work because it is usually log files which are missing which don't match to timestamp days
     # daily_percent_df = daily_percent_df.ix[daily_country_source.__data__[cc].index]
-    daily_percent_df = pd.DataFrame(daily_percent_df / daily_country_source.__data__[cc])
+    daily_percent_df = pd.DataFrame(daily_percent_df / daily_country_source.__data__[country])
     # daily_percent_df = pd.DataFrame(daily_percent_df[daily_percent_df[0] < 1])
     daily_percent_df = daily_percent_df * 100
     daily_percent_df = daily_percent_df.reset_index()
     daily_percent_df.columns = ['date', 'country_percent']
-    daily_percent_source = limnpy.DataSource('%s_daily_country_percent' % provider_underscore,
-                                              '%s Daily Country Percent' % provider_title,
+    daily_percent_source = limnpy.DataSource('%s_daily_wp_views_as_percent_country_share' % provider_underscore,
+                                              '%s Daily WP Views as Percentage Share of %s WP Views' % (provider_title,country),
                                               daily_percent_df)
     daily_percent_source.write(basedir)
 
     # can't just aggregate daily percents--math doesn't work like that
     monthly_percent_df = monthly_version_source.__data__[available_versions].sum(axis=1)
-    monthly_percent_df = pd.DataFrame(monthly_percent_df / monthly_country_source.__data__[cc])
+    monthly_percent_df = pd.DataFrame(monthly_percent_df / monthly_country_source.__data__[country])
     monthly_percent_df = monthly_percent_df * 100
     monthly_percent_df = monthly_percent_df.reset_index()
     monthly_percent_df.columns = ['date', 'country_percent']
-    monthly_percent_source = limnpy.DataSource('%s_monthly_country_percent' % provider_underscore,
-                                              '%s Monthly Country Percent' % provider_title,
+    monthly_percent_source = limnpy.DataSource('%s_monthly_wp_views_as_percent_country_share' % provider_underscore,
+                                              '%s Monthly WP Views as Percentage Share of %s WP Views' % (provider_title, country),
                                               monthly_percent_df)
     monthly_percent_source.write(basedir)
 
@@ -333,30 +375,34 @@ def make_summary(datasources, basedir):
     logging.info('type(vm.ix[1,\'Start Date\']: %s', type(vm.ix[1,'Start Date']))
     dfs = []
     for provider, datasource in datasources.items():
-        logger.debug('vm: %s', vm)
+        # logger.debug('vm: %s', vm)
         start_date = vm.ix[provider, 'Start Date']
         if not start_date: # this means that the provider isn't yet live
             continue
         valid_df = datasource.__data__[datasource.__data__.index > start_date]
         # logger.debug('valid_df: %s', valid_df)
 
-        free_versions = set(map(unicode.strip, vm.ix[provider, 'Version'].split(',')))
-        valid_df = valid_df[list(set(free_versions) & set(valid_df.columns))]
+        free_versions = set(map(VERSIONS.get, map(unicode.strip, vm.ix[provider, 'Version'].split(','))))
+        valid_df = valid_df[list(free_versions & set(valid_df.columns))]
         # logger.debug('valid_df: %s', valid_df)
         dfs.append(valid_df)
         
     long_fmt = pd.concat(dfs)
-    logger.debug('long_fmt: %s', long_fmt)
+    # logger.debug('long_fmt: %s', long_fmt)
     long_fmt = long_fmt.reset_index()
     long_fmt = long_fmt.rename(columns={'index' : 'date'})
-    logger.debug('long_fmt: %s', long_fmt)
-    logger.debug('long_fmt.columns: %s', long_fmt.columns)
+    # logger.debug('long_fmt: %s', long_fmt)
+    # logger.debug('long_fmt.columns: %s', long_fmt.columns)
     final = long_fmt.groupby('date').sum()
     final['All Versions'] = final.sum(axis=1)
-    logger.debug('final: %s', final)
+    # logger.debug('final: %s', final)
     total_ds = limnpy.DataSource('free_mobile_traffic_by_version', 'Free Mobile Traffic by Version', final)
     total_ds.write(basedir)
-    total_ds.write_graph(basedir=basedir)
+    total_graph = total_ds.get_graph()
+    total_graph.__graph__['desc'] = "This graph shows the total number of free page requests coming "\
+    "from all of our mobile partners for each version.  The counts from a particular partner are only included "\
+    "from the public start date onward, so keep that in mind when interpreting drastic increases."
+    total_graph.write(basedir)
 
 
 def make_graphs(counts, sampled_counts, providers, basedir):
@@ -380,12 +426,15 @@ def make_graphs(counts, sampled_counts, providers, basedir):
         provider_version_sources[provider] = daily_version_source
 
         # main tab ###################################################
-        daily_version_graph = daily_version_source.get_graph(['Z','M'])
+        daily_version_graph = daily_version_source.get_graph([VERSIONS['M'], VERSIONS['Z']])
         #daily_version_graph.__graph__['options']['stackedGraph'] = True
         daily_version_graph.write(basedir)
 
-        monthly_version_graph = monthly_version_source.get_graph(['Z','M'])
+        monthly_version_graph = monthly_version_source.get_graph([VERSIONS['M'], VERSIONS['Z']])
         #monthly_version_graph.__graph__['options']['stackedGraph'] = True
+        monthly_version_graph.__graph__['desc'] = "This graph is identical to the daily version except that it has been "\
+        "aggregated by month.  Each monthly bin is backwards looking, meaning that the aggregate counts are "\
+        "plotted as the last day of that month.  So the aggregate count for October would be plotted on October 31. "
         monthly_version_graph.write(basedir)
 
         db.add_tab('Versions', [daily_version_graph.__graph__['slug'], monthly_version_graph.__graph__['slug']])
@@ -404,9 +453,15 @@ def make_graphs(counts, sampled_counts, providers, basedir):
                                                                 monthly_version_source,
                                                                 basedir)
         daily_raw_graph = daily_raw_source.get_graph()
+        daily_raw_graph.__graph__['desc'] = "This graph compares the number of page requests from the provider IP ranges "\
+        "for each wikipedia version with the total number of page views to the mobile site from the entire country of %s." % country
+
         daily_raw_graph.write(basedir)
 
         monthly_raw_graph = monthly_raw_source.get_graph()
+        monthly_raw_graph.__graph__['desc'] = "This graph is identical to the daily version except that it has been "\
+        "aggregated by month.  Each monthly bin is backwards looking, meaning that the aggregate counts are "\
+        "plotted as the last day of that month.  So the aggregate count for October would be plotted on October 31."
         monthly_raw_graph.write(basedir)
         db.add_tab('Country Raw', [daily_raw_graph.__graph__['slug'], monthly_raw_graph.__graph__['slug']])
 
@@ -423,9 +478,15 @@ def make_graphs(counts, sampled_counts, providers, basedir):
             continue
 
         daily_percent_graph = daily_percent_source.get_graph()
+        daily_percent_graph.__graph__['desc'] = "This graph shows the number of page requests from the provider IP ranges "\
+        "to the mobile and zero versions of wikipedia divided by the total number page views to those sites from the entire "\
+        "country of %s." % country
         daily_percent_graph.write(basedir)
 
         monthly_percent_graph = monthly_percent_source.get_graph()
+        monthly_percent_graph.__graph__['desc'] = "This graph is identical to the daily version except that it has been "\
+        "aggregated by month.  Each monthly bin is backwards looking, meaning that the aggregate counts are "\
+        "plotted as the last day of that month.  So the aggregate count for October would be plotted on October 31."
         monthly_percent_graph.write(basedir)
 
         db.add_tab('Country Percent', [daily_percent_graph.__graph__['slug'], monthly_percent_graph.__graph__['slug']])

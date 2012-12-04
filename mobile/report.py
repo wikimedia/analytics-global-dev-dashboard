@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 FIELDS = ['date', 'lang', 'project', 'site', 'country', 'provider']
 COUNT_FIELDS = ['count'] + FIELDS
+OLD_FIELDS = ['count', 'lang', 'project', 'site']
 
 def parse_args():
     parser = argparse.ArgumentParser('loads cached squid log count files and selects a specific date range')
@@ -40,12 +41,19 @@ def load(cache_dir):
             logger.exception('exception caught while loading cache file: %s', count_file)
     return cache
 
+def old_fmt(cache, opts):
+    for prov in cache.provider.unique():
+        prov_counts = cache[cache.provider == prov]
+        prov_counts = prov_counts[OLD_FIELDS]
+        prov_counts.to_csv(opts['outfile'] + prov.replace('-', '_') + '.csv', index=False)
+
 def main():
     opts = parse_args()
     cache = load(opts['cache_dir'])
     cache = cache[cache['date'] >= opts['start']]
     cache = cache[cache['date'] < opts['end']]
-    cache.to_csv(opts['outfile'], index=False)
+    cache.to_csv(opts['outfile'] + '.csv', index=False)
+    old_fmt(cache, opts)
 
 if __name__ == '__main__':
     main()
