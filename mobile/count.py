@@ -81,7 +81,7 @@ LEVELS = {'DEBUG': logging.DEBUG,
 VERSIONS = ['X', 'M', 'Z']
 
 FIELDS = ['date', 'lang', 'project', 'site', 'country', 'provider']
-
+COUNT_FIELDS = ['count'] + FIELDS
 
 def count_file((fname, cache_dir, filter_by_mobile)):
     logger.debug('processing file: %s', fname)
@@ -116,7 +116,7 @@ def count_file((fname, cache_dir, filter_by_mobile)):
 
             raw_counts = map(lambda (key, count) : [count] + list(key), ctr.items())
             counts = pd.DataFrame(raw_counts)
-            date_col_ind = FIELDS.index('date') + 1
+            date_col_ind = COUNT_FIELDS.index('date')
             counts[date_col_ind] = pd.to_datetime(counts[date_col_ind])
             logger.debug('counts:\n %s', counts)
             counts.to_csv(cache_file, index=False)
@@ -159,14 +159,18 @@ def get_files(datadir):
 
 
 def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only):
-    cache = pd.DataFrame(columns=['count'] + FIELDS)
-    date_col_ind = FIELDS.index('date') + 1
+    cache = pd.DataFrame(columns=COUNT_FIELDS)
+    date_col_ind = COUNT_FIELDS.index('date')
+    num_cached = len(os.listdir(cache_dir))
+    logger.info('loading %d cached files from %s', num_cached, cache_dir)
     if os.path.exists(cache_dir):
-        for count_file in os.listdir(cache_dir):
+        for i, count_file in enumerate(os.listdir(cache_dir)):
+            # if i > 2:
+            #     break
             try:
-                df = pd.read_table(os.path.join(cache_dir, count_file), parse_dates=[date_col_ind], sep=',')
-                df.columns = ['count'] + FIELDS
-                # logging.debug('cached file reloaded:\n%s', df[:10])
+                df = pd.read_table(os.path.join(cache_dir, count_file), parse_dates=[date_col_ind], sep=',',  header=None)
+                df.columns = COUNT_FIELDS
+                logging.debug('loaded %d lines from %s (%d / %d)', len(df), count_file, i, num_cached)
                 cache = cache.append(df)
             except:
                 logger.exception('exception caught while loading cache file: %s', count_file)
@@ -177,7 +181,7 @@ def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only):
         # -7 because '.counts' is 7 chars long
         cached_files = map(lambda f : f[:-7], os.listdir(cache_dir)) if os.path.exists(cache_dir) else []
         filtered = filter(lambda f : f not in cached_files, files)
-        logger.debug('len(filtered): %d', len(filtered))
+        logger.info('parsing  %d files from %s', len(filtered), cache_dir)
         counts = count_views(filtered, cache, cache_dir, filter_by_mobile)
     else:
         counts = cache
@@ -209,7 +213,12 @@ def make_zero_sources(counts, provider, basedir):
     provider_underscore = provider.replace('-','_')
     provider_title = provider.replace('-',' ').title()
 
-    prov_counts = counts[counts.provider == provider]
+    logger.debug('counts:\n%s', counts)
+    logger.debug('counts.columns: %s', counts.columns)
+
+    # HACK TO FIX SPELLING ERRER in orange-tunisia udp-filter
+    provider_id = provider if provider != 'orange-tunisia' else 'orange-tunesia'
+    prov_counts = counts[counts.provider == provider_id]
     if len(prov_counts) == 0:
         logger.warning('skipping provider: %s--graphs will not be available on dashbaord', provider)
         return None, None
@@ -283,14 +292,19 @@ def make_percent_sources(provider,
 
     cc = PROVIDER_COUNTRY_CODES[provider]
     country = COUNTRY_NAMES[cc]
+    available_versions = list(set(['M', 'Z']) & set(daily_version_source.__data__.columns))
 
     logger.debug('type(daily_version_source.__data__: %s)', type(daily_version_source.__data__))
     # logger.debug('daily_version_source.__data__: %s', daily_version_source.__data__)
-    if 'M' not in daily_version_source.__data__.columns or 'Z' not in daily_version_source.__data__.columns:
-        logger.warning('skipping count graphs for provider %s because M or Z column is missing from daily_version_source', provider)
-        return None, None
-    daily_percent_df = daily_version_source.__data__[['M', 'Z']].sum(axis=1)
+    # if 'M' not in daily_version_source.__data__.columns and 'Z' not in daily_version_source.__data__.columns:
+    #     logger.warning('skipping count graphs for provider %s because M and Z column are missing from daily_version_source', provider)
+    #     return None, None
+
+    daily_percent_df = daily_version_source.__data__[available_versions].sum(axis=1)
+    # doesn't work because it is usually log files which are missing which don't match to timestamp days
+    # daily_percent_df = daily_percent_df.ix[daily_country_source.__data__[cc].index]
     daily_percent_df = pd.DataFrame(daily_percent_df / daily_country_source.__data__[cc])
+    # daily_percent_df = pd.DataFrame(daily_percent_df[daily_percent_df[0] < 1])
     daily_percent_df = daily_percent_df * 100
     daily_percent_df = daily_percent_df.reset_index()
     daily_percent_df.columns = ['date', 'country_percent']
@@ -300,7 +314,7 @@ def make_percent_sources(provider,
     daily_percent_source.write(basedir)
 
     # can't just aggregate daily percents--math doesn't work like that
-    monthly_percent_df = monthly_version_source.__data__[['M', 'Z']].sum(axis=1)
+    monthly_percent_df = monthly_version_source.__data__[available_versions].sum(axis=1)
     monthly_percent_df = pd.DataFrame(monthly_percent_df / monthly_country_source.__data__[cc])
     monthly_percent_df = monthly_percent_df * 100
     monthly_percent_df = monthly_percent_df.reset_index()
@@ -318,14 +332,15 @@ def make_summary(datasources, basedir):
     vm = vm.set_index(vm['Partner Identifier'])
     logging.info('type(vm.ix[1,\'Start Date\']: %s', type(vm.ix[1,'Start Date']))
     dfs = []
-    for pid, datasource in datasources.items():
-        start_date = vm.ix[pid, 'Start Date']
+    for provider, datasource in datasources.items():
+        logger.debug('vm: %s', vm)
+        start_date = vm.ix[provider, 'Start Date']
         if not start_date: # this means that the provider isn't yet live
             continue
         valid_df = datasource.__data__[datasource.__data__.index > start_date]
         # logger.debug('valid_df: %s', valid_df)
 
-        free_versions = set(map(unicode.strip, vm.ix[pid, 'Version'].split(',')))
+        free_versions = set(map(unicode.strip, vm.ix[provider, 'Version'].split(',')))
         valid_df = valid_df[list(set(free_versions) & set(valid_df.columns))]
         # logger.debug('valid_df: %s', valid_df)
         dfs.append(valid_df)
@@ -346,7 +361,6 @@ def make_summary(datasources, basedir):
 
 def make_graphs(counts, sampled_counts, providers, basedir):
     daily_country_source, monthly_country_source = make_sampled_source(sampled_counts, basedir)
-    # daily_country_source, monthly_country_source = make_sampled_source(counts, basedir)
     provider_version_sources = {}
     for provider in providers:
 
@@ -470,15 +484,15 @@ def main():
                              opts['zero_cache'],
                              sample_rate=10,
                              filter_by_mobile=False,
-                             # cache_only=opts['cache_only'])
-                             cache_only=True)
+                             cache_only=opts['cache_only'])
+                             # cache_only=True)
 
     sampled_counts = get_counts(opts['sampled_datadir'], 
                                 opts['sampled_cache'], 
                                 sample_rate=1000, 
                                 filter_by_mobile=True,
-                                # cache_only=opts['cache_only'])
-                                cache_only=False)
+                                cache_only=opts['cache_only'])
+                                # cache_only=False)
     make_graphs(zero_counts, sampled_counts, opts['providers'], opts['limn_basedir'])
     
 
