@@ -183,10 +183,10 @@ def write_project_mysql(proj, cursor, basedir):
     limn_name = '%s Editors by Country' % proj.upper()
 
     if sql.paramstyle == 'qmark':
-        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=?"""
+        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=? AND end = start + INTERVAL 30 day"""
         logging.debug('making query: %s', query)
     elif sql.paramstyle == 'format':
-        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=%s"""
+        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=%s AND end = start + INTERVAL 30 day"""
     cursor.execute(query, [proj])
     proj_rows = cursor.fetchall()
     
@@ -249,12 +249,12 @@ def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
 
     if sql.paramstyle == 'qmark':
         country_fmt = ', '.join([' ? ']*len(top_k))
-        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=? AND country IN %s"""
+        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=? AND country IN %s AND end = start + INTERVAL 30 day"""
         query = query % country_fmt
     elif sql.paramstyle == 'format':
         country_fmt = '(%s)' % ', '.join([' %s ']*len(top_k))
         logging.debug('country_fmt: %s', country_fmt)
-        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=%s AND country IN """
+        query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=%s  AND end = start + INTERVAL 30 day AND country IN """
         query = query + country_fmt
         args = [proj]
         args.extend(top_k)
@@ -288,7 +288,7 @@ def write_overall_mysql(projects, cursor, basedir):
     limn_id = 'overall_by_lang'
     limn_name = 'Overall Editors by Language'
 
-    query = """ SELECT * FROM erosen_geocode_active_editors_world_test"""
+    query = """ SELECT * FROM erosen_geocode_active_editors_world"""
     cursor.execute(query)
     overall_rows = cursor.fetchall()
     
@@ -347,12 +347,14 @@ def write_group_mysql(group_key, country_data, cursor, basedir):
             group_query = """SELECT end, cohort, SUM(count) 
                          FROM erosen_geocode_active_editors_country
                          WHERE country IN (%s)
+                         AND end = start + INTERVAL 30 day
                          GROUP BY end, cohort"""
             countries_fmt = ', '.join([' ? ']*len(countries))
         elif sql.paramstyle == 'format':
             group_query = """SELECT end, cohort, SUM(count) 
                          FROM erosen_geocode_active_editors_country
                          WHERE country IN (%s)
+                         AND end = start + INTERVAL 30 day
                          GROUP BY end, cohort"""
             countries_fmt = ', '.join([' %s ']*len(countries))
         group_query_fmt = group_query % countries_fmt
@@ -394,8 +396,7 @@ def parse_args():
         help='any number of appropriately named json files')
     parser.add_argument(
         '-d','--basedir',
-        default='.',
-        type=os.path.expanduser,
+        default='/home/erosen/src/dashboard/geowiki/data',
         help='directory in which to find or create the datafiles and datasources directories for the *.csv and *.yaml files')
     parser.add_argument(
         '-b', '--basename',
@@ -409,7 +410,7 @@ def parse_args():
     parser.add_argument(
         '-p', '--parallel',
         action='store_true',
-        default=False,
+        default=True,
         help='use a multiprocessing pool to execute per-language analysis in parallel'
         )
 
@@ -428,10 +429,11 @@ def get_projects():
 def process_project_par((project, basedir)):
     try:
         logging.info('processing project: %s', project)
-        # db = sql.connect(read_default_file=os.path.expanduser('~/.my.cnf.research'), db='staging')
-        # cursor = db.cursor(MySQLdb.cursors.DictCursor)
+        db = sql.connect(read_default_file=os.path.expanduser('~/.my.cnf.research'), db='staging')
+        cursor = db.cursor(MySQLdb.cursors.DictCursor)
 
-        db = sql.connect('/home/erosen/src/editor-geocoding/geowiki.sqlite')
+        # db = sql.connect('/home/erosen/src/editor-geocoding/geowiki.sqlite')
+
         write_project_mysql(project, cursor, args.basedir)
         write_project_top_k_mysql(project, cursor, args.basedir, k=args.k)
     except:
@@ -458,17 +460,17 @@ if __name__ == '__main__':
             logging.info('processing project: %s (%d/%d)', project, i, len(projects))
             process_project(project, cursor, args.basedir)
     else:
-        pool = multiprocessing.Pool(10)
+        pool = multiprocessing.Pool(20)
         pool.map_async(process_project_par, itertools.izip(projects, itertools.repeat(args.basedir))).get(99999)
 
     write_overall_mysql(projects, cursor, args.basedir)
 
     # # use metadata from Google Drive doc which lets us group by country
-    # country_data = gcat.get_file('Global South and Region Classifications', sheet='data', fmt='dict', usecache=True)
+    country_data = gcat.get_file('Global South and Region Classifications', sheet='data', fmt='dict', usecache=True)
     # logging.debug('typ(country_data): %s', type(country_data))
     # logging.info('country_data[0].keys: %s', country_data[0].keys())
 
-    # write_group_mysql('country', country_data, cursor, args.basedir)
-    # write_group_mysql('region', country_data, cursor, args.basedir)
-    # write_group_mysql('global_south', country_data, cursor, args.basedir)
-    # write_group_mysql('catalyst', country_data, cursor, args.basedir)
+    write_group_mysql('country', country_data, cursor, args.basedir)
+    write_group_mysql('region', country_data, cursor, args.basedir)
+    write_group_mysql('global_south', country_data, cursor, args.basedir)
+    write_group_mysql('catalyst', country_data, cursor, args.basedir)
