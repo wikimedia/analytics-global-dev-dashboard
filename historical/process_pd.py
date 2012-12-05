@@ -3,7 +3,10 @@ import csv
 import limnpy
 import datetime
 
+basedir = '/home/erosen/src/dashboard/historical/data'
+
 stats_fn='/a/wikistats/csv/csv_wp/StatisticsMonthly.csv'
+stats_fn='/a/wikistats_git/dumps/csv/csv_wp/StatisticsMonthly.csv'
 
 fieldnames = ['project',
               'date',
@@ -39,18 +42,23 @@ val_keys = ['total_editors',
               'num_links_external',
               'num_links_redirects']
 
-df = pd.read_csv(stats_fn, names=fieldnames, parse_dates=['date'])
-df['date'] = df['date'].apply(datetime.datetime.date)
+df = pd.read_table(stats_fn, sep=',', header=None, parse_dates=['date'], names=fieldnames)
+df.set_index('date')
 
-indic_lang_df = pd.read_csv('../data/indic_lang_ids.tsv', names=['id','name'], sep='\t', comment='#')
+indic_lang_df = pd.read_table('../data/indic_lang_ids.tsv', sep='\t', comment='#', names=['id','name'])
 indic_langs = indic_lang_df['id'].dropna().unique()
 
 for val_key in val_keys:
     pt = df.pivot(index='date', columns='project', values=val_key)
     pt = pt.fillna(0)
     limn_id = 'overall_%s' % val_key
-    limnpy.write(limn_id, limn_id.replace('_', ' ').title(), list(pt.reset_index().columns), pt.itertuples())
+    limn_title = limn_id.replace('_', ' ').title()
+    ds = limnpy.DataSource(limn_id, limn_title, pt)
+    ds.write(basedir)
 
-    indic_pt = pt[indic_langs].fillna(0).sum(axis=1)
+    indic_pt = pd.DataFrame(pt[indic_langs].fillna(0).sum(axis=1), columns=[val_key])
+    print indic_pt.index
     indic_limn_id = 'indic_language_%s' % val_key
-    limnpy.write(indic_limn_id, indic_limn_id.replace('_', ' ').title(), list(indic_pt.reset_index().columns), indic_pt.iteritems())
+    indic_limn_title = indic_limn_id.replace('_', ' ').title()
+    indic_ds = limnpy.DataSource(indic_limn_id, indic_limn_title, indic_pt)
+    indic_ds.write(basedir)
