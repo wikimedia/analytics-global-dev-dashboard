@@ -8,7 +8,9 @@ logger = logging.getLogger(__name__)
 
 FIELDS = ['date', 'lang', 'project', 'site', 'country', 'provider']
 COUNT_FIELDS = ['count'] + FIELDS
-OLD_FIELDS = ['count', 'lang', 'project', 'site']
+OLD_FIELDS = ['date', 'lang', 'project', 'site', 'count']
+
+SAMPLE_LENGTH = 10
 
 def parse_args():
     parser = argparse.ArgumentParser('loads cached squid log count files and selects a specific date range')
@@ -52,6 +54,7 @@ def main():
     cache = load(opts['cache_dir'])
     cache = cache[cache['date'] >= opts['start']]
     cache = cache[cache['date'] < opts['end']]
+    cache['count'] = cache['count'] * SAMPLE_LENGTH
     cache.to_csv(opts['outfile'] + '.csv', index=False)
     old_fmt(cache, opts)
 
