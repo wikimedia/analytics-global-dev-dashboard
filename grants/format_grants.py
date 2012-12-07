@@ -6,6 +6,8 @@ import itertools
 import xlrd
 import datetime
 import re
+import pprint
+import sys
 
 import limnpy
 import gcat
@@ -18,6 +20,8 @@ root_logger.addHandler(ch)
 root_logger.setLevel(logging.DEBUG)
 
 logger = logging.getLogger(__name__)
+
+basedir = 'data'
 
 def parse_args():
     parser = argparse.ArgumentParser('Utility for creating limn charts from WMF Grants spreadsheets',
@@ -50,37 +54,53 @@ def clean_rows(rows):
 
 
 def write_limn_files(pt, val_key=None, group_key=None, limn_id=None, limn_name=None):
+    logger.debug('pt:\n%s', pt)
     pt['date'] = map(pd.Timestamp.to_datetime, pt.index)
-    limn_rows = [dict(pt.irow(i)) for i in range(len(pt))]
-    #logging.debug('limn_rows: %s', limn_rows)
-    limn_labels = list(pt.columns)
 
     if not (limn_id or limn_name):
         limn_name = ('Grants %s by %s' % (val_key, group_key))
         limn_id = limn_name.replace(' ', '_').lower()
         limn_id = re.sub('\W', '', limn_id)
-    limnpy.writedicts(limn_id, limn_name, limn_rows)
+    ds = limnpy.DataSource(limn_id, limn_name, pt)
+    try:
+        ds.write(basedir)
+        g = ds.get_graph()
+        g.__graph__['options']['stackedGraph'] = True
+        g.write(basedir=basedir)
+        return g
+    except:
+        logger.debug('error on limn_name: %s', limn_name)
+        logger.debug('ds.__source__:\n %s', pprint.pformat(ds.__source__))
+        logger.debug('type(ds.__data__):%s', type(ds.__data__))
+        logger.debug('ds.__data__.columns: %s', ds.__data__.columns)
+        logger.debug('ds.__data__.index: %s', ds.__data__.index)
+        raise
 
 
 def write_groups(all_rows):
     group_keys = set(['By UN region',
                   'Catalyst Program',
-                  'By country (short form)',
-                  'UN developing country classification',
-                  'Human Development Index 2011 Category',
+                  'Country of impact (short form)',
+                  'Global South (impact)',
+                  'Global South (requestor)',
+                  'By UN region (impact)',
                   'Grant Status',
                   'Grant stage']) & set(all_rows.columns)
     val_date_keys = [('Amount Funded in USD', 'Date of decision'),
                 ('Amount Requested in USD', 'Date opened')]
-                 
+
+    graphs = []
     for group_key, (val_key, date_key) in itertools.product(group_keys, val_date_keys):
         logging.debug('grouping by (%s, %s), summed %s', group_key, date_key, val_key)
         pt = all_rows.pivot_table(values=val_key, rows=date_key, cols=group_key, aggfunc=sum)
         pt = pt.fillna(0)
         pt_cum = pt.cumsum()
 
-        write_limn_files(pt, val_key, group_key)
-        write_limn_files(pt_cum, 'Cumulative ' + val_key, group_key)
+        g = write_limn_files(pt, val_key, group_key)
+        g_cum = write_limn_files(pt_cum, 'Cumulative ' + val_key, group_key)
+        graphs.append(g)
+        graphs.append(g_cum)
+    return graphs
 
 
 def write_total(all_rows):
@@ -97,29 +117,50 @@ def write_total(all_rows):
     funded_pt_all = all_rows.pivot_table(values='Amount Funded in USD', rows='Date opened', aggfunc=sum)
     funded_pt_all = funded_pt_all.fillna(0)
     funded_pt_all_cum = funded_pt_all.cumsum()
-    write_limn_files(DataFrame(funded_pt_all),
-                     limn_id='grants_amount_funded_in_usd_all', 
-                     limn_name='Grants Amount Funded In USD All')
-    write_limn_files(DataFrame(funded_pt_all_cum), 
-                     limn_id='grants_cumulative_amount_funded_in_usd_all', 
-                     limn_name='Grants Cumulative Amount Funded In USD All')
+    g = write_limn_files(DataFrame(funded_pt_all),
+                          limn_id='grants_amount_funded_in_usd_all', 
+                          limn_name='Grants Amount Funded In USD All')
+    g_cum = write_limn_files(DataFrame(funded_pt_all_cum), 
+                              limn_id='grants_cumulative_amount_funded_in_usd_all', 
+                              limn_name='Grants Cumulative Amount Funded In USD All')
+    return (g, g_cum)
+
+
+def add_global_south(rows):
+    meta = gcat.get_file('Global South and Region Classifications', fmt='pandas', sheet='MaxMind Countries Final')
+    logger.debug('meta:\n%s', meta)
+    labels = dict(meta[['Country', 'global south']].values)
+
+    req_gs = rows['Country of requestor (short form)'].apply(lambda c : labels.get(c,'Unkown Country Name'))
+    rows['Global South (requestor)'] = req_gs
+    logger.debug('req_gs:\n%s', req_gs)
+    impact_gs = rows['Country of impact (short form)'].apply(lambda c : labels.get(c,'Unkown Country Name'))
+    rows['Global South (impact)'] = impact_gs
+    logger.debug('impact_gs:\n%s', impact_gs)
+    return rows
 
 
 def main():
     opts = parse_args()
 
-    f = gcat.get_file(opts['grants_file'], fmt='pandas', usecache=True)
+    f = gcat.get_file(opts['grants_file'], fmt='pandas_excel', usecache=False)
 
     all_rows = pd.DataFrame()
-    for sn in ['%d-%d' % (y-1, y) for y in opts['years']]:
+    graphs = []
+    for sn in ['FY%d%d' % (y-1, y) for y in opts['years']]:
         logger.debug('processing fiscal year: %s', sn)
-        rows = f[sn]
-        all_rows = pd.concat([all_rows, clean_rows(rows)])
+        rows = f.parse(sn, skiprows=2)
+        logger.debug(rows)
+        # all_rows = pd.concat([all_rows, clean_rows(rows)])
+        all_rows = pd.concat([all_rows, rows])
+        all_rows = add_global_south(all_rows)
         
-        write_groups(all_rows)
-        write_total(all_rows)
+        graphs.extend(write_groups(all_rows))
+        graphs.extend(write_total(all_rows))
     
-    logger.debug('len(all_rows) : %s, type(all_rows): %s, all_rows: %s', len(all_rows), type(all_rows), all_rows)
+    db = limnpy.Dashboard('grants', 'Wikimedia Grants', 'Dashboard')
+    db.add_tab('all', map(lambda g : g.__graph__['id'], graphs))
+    db.write(basedir)
 
 if __name__ == '__main__':
     main()
