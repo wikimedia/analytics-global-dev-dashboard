@@ -12,6 +12,7 @@ import sys
 import limnpy
 import gcat
 
+
 root_logger = logging.getLogger()
 ch = logging.StreamHandler()
 formatter = logging.Formatter('[%(levelname)s]\t[%(threadName)s]\t[%(funcName)s:%(lineno)d]\t%(message)s')
@@ -20,6 +21,8 @@ root_logger.addHandler(ch)
 root_logger.setLevel(logging.DEBUG)
 
 logger = logging.getLogger(__name__)
+
+
 
 basedir = 'data'
 
@@ -55,7 +58,6 @@ def clean_rows(rows):
 
 def write_limn_files(pt, val_key=None, group_key=None, limn_id=None, limn_name=None):
     logger.debug('pt:\n%s', pt)
-    pt['date'] = map(pd.Timestamp.to_datetime, pt.index)
 
     if not (limn_id or limn_name):
         limn_name = ('Grants %s by %s' % (val_key, group_key))
@@ -91,7 +93,7 @@ def write_groups(all_rows):
 
     graphs = []
     for group_key, (val_key, date_key) in itertools.product(group_keys, val_date_keys):
-        logging.debug('grouping by (%s, %s), summed %s', group_key, date_key, val_key)
+        logger.debug('grouping by (%s, %s), summed %s', group_key, date_key, val_key)
         pt = all_rows.pivot_table(values=val_key, rows=date_key, cols=group_key, aggfunc=sum)
         pt = pt.fillna(0)
         pt_cum = pt.cumsum()
@@ -104,7 +106,10 @@ def write_groups(all_rows):
 
 
 def write_total(all_rows):
-    req_pt_all = all_rows.pivot_table(values='Amount Requested in USD', rows='Date opened', aggfunc=sum)
+    # req_pt_all = all_rows.pivot_table(values='Amount Requested in USD', rows='Date opened', aggfunc=sum)
+    req_pt_all = pd.DataFrame(all_rows.groupby('Date opened').sum()['Amount Requested in USD'])
+    req_pt_all.columns = ['Amount Requested in USD']
+    logger.debug('req_pt_all:\n%s', req_pt_all)
     req_pt_all = req_pt_all.fillna(0)
     req_pt_all_cum = req_pt_all.cumsum()
     write_limn_files(DataFrame(req_pt_all),
@@ -114,12 +119,13 @@ def write_total(all_rows):
                      limn_id='grants_cumulative_amount_requested_in_usd_all',
                      limn_name='Grants Cumulative Amount Requested In USD All')
     
-    funded_pt_all = all_rows.pivot_table(values='Amount Funded in USD', rows='Date opened', aggfunc=sum)
+    funded_pt_all = pd.DataFrame(all_rows.groupby('Date of decision').sum()['Amount Funded in USD'])
+    funded_pt_all.columns = ['Amount Funded in USD']
     funded_pt_all = funded_pt_all.fillna(0)
     funded_pt_all_cum = funded_pt_all.cumsum()
     g = write_limn_files(DataFrame(funded_pt_all),
-                          limn_id='grants_amount_funded_in_usd_all', 
-                          limn_name='Grants Amount Funded In USD All')
+                         limn_id='grants_amount_funded_in_usd_all', 
+                         limn_name='Grants Amount Funded In USD All')
     g_cum = write_limn_files(DataFrame(funded_pt_all_cum), 
                               limn_id='grants_cumulative_amount_funded_in_usd_all', 
                               limn_name='Grants Cumulative Amount Funded In USD All')
