@@ -83,7 +83,7 @@ def write_groups(all_rows):
     group_keys = set(['By UN region',
                   'Catalyst Program',
                   'Country of impact (short form)',
-                  'Global South (impact)',
+                  'Global South (use)',
                   'Global South (requestor)',
                   'By UN region (impact)',
                   'Grant Status',
@@ -141,7 +141,7 @@ def add_global_south(rows):
     rows['Global South (requestor)'] = req_gs
     logger.debug('req_gs:\n%s', req_gs)
     impact_gs = rows['Country of impact (short form)'].apply(lambda c : labels.get(c,'Unkown Country Name'))
-    rows['Global South (impact)'] = impact_gs
+    rows['Global South (use)'] = impact_gs
     logger.debug('impact_gs:\n%s', impact_gs)
     return rows
 
