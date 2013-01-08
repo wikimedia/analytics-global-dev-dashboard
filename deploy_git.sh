@@ -3,6 +3,8 @@
 # mkdir datafiles datasources graphs
 # cd ../dashboard
 
+cd /home/erosen/src/dashboard/
+
 for source in "geowiki" "grants" "mobile" "historical"
 do
     for type in "dashboards" "datasources" "datafiles" "graphs"

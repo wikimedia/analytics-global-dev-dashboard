@@ -20,34 +20,42 @@ import gcat
 
 root_logger = logging.getLogger()
 ch = logging.StreamHandler()
-formatter = logging.Formatter('[%(levelname)s]\t[%(threadName)s]\t[%(funcName)s:%(lineno)d]\t%(message)s')
+formatter = logging.Formatter('[%(levelname)s]\t[%(name)s]\t[%(funcName)s:%(lineno)d]\t%(message)s')
 ch.setFormatter(formatter)
 root_logger.addHandler(ch)
 root_logger.setLevel(logging.DEBUG)
 
+logger = logging.getLogger(__name__)
+
+# Parameters for interacting with Google Drive doc which holds Global South categories etc.
+META_DATA_TITLE    = 'Global South and Region Classifications'
+META_DATA_SHEET    = 'data'
+META_DATA_COUNTRY_FIELD = 'MaxMind Country'
+META_DATA_REGION_FIELD = 'Region'
+META_DATA_GLOBAL_SOUTH_FIELD = 'Global South'
 
 def flatten(nest, path=[], keys=[]):
-    #logging.debug('entering with type(nest):%s,\tpath: %s' % (type(nest), path))
+    #logger.debug('entering with type(nest):%s,\tpath: %s' % (type(nest), path))
     # try to use as dict
     try:
-        #logging.debug('trying to use as dict')
+        #logger.debug('trying to use as dict')
         for k, v in nest.items():
-            #logging.debug('calling flatten(%s, %s)' % (k, v))
+            #logger.debug('calling flatten(%s, %s)' % (k, v))
             for row in flatten(v, path + [k], keys):
                 yield row
     except AttributeError:
-        #logging.debug('nest has not attribute \'items()\'')
+        #logger.debug('nest has not attribute \'items()\'')
         # try to use as list
         try:
-            #logging.debug('trying to use as list')
+            #logger.debug('trying to use as list')
             for elem in nest:
                 for row in flatten(elem, path, keys):
                     yield row
         except TypeError:
-            #logging.debug('nest object of type %s is not iterable' % (type(nest)))
-            #logging.debug('reached leaf of type: %s' % (type(nest)))
+            #logger.debug('nest object of type %s is not iterable' % (type(nest)))
+            #logger.debug('reached leaf of type: %s' % (type(nest)))
             # must be a leaf, finally yield
-            #logging.debug('yielding %s' % (path + [nest]))
+            #logger.debug('yielding %s' % (path + [nest]))
             yield dict(zip(keys, path + [nest]))
 
 
@@ -60,7 +68,7 @@ def load_json_files(files):
         json_f['end'] = dateutil.parser.parse(json_f['end']) 
         json_f['start'] = dateutil.parser.parse(json_f['start'])
         if (json_f['end'] - json_f['start']).days != 30:
-            logging.info('skipping file: because it is not a 30 day period')
+            logger.info('skipping file: because it is not a 30 day period')
             continue
         json_f['end'] = json_f['end'].strftime(limn_fmt)
         json_f['start'] = json_f['start'].strftime(limn_fmt)
@@ -81,13 +89,13 @@ class Collection(object):
         return iter(self.row_hashes.values())
 
     def index(self, key):
-        logging.debug('creating index for key: %s', key)
+        logger.debug('creating index for key: %s', key)
         idx = defaultdict(set)
         for row_hash, row in self.row_hashes.items():
             if key in row:
                 idx[row[key]].add(row_hash)
         self.indices[key] = idx
-        logging.debug('finished creating index for key: %s', key)
+        logger.debug('finished creating index for key: %s', key)
 
     @classmethod
     def is_iterable(cls, val):
@@ -96,7 +104,7 @@ class Collection(object):
 
     def find(self, probe):
         filtered = self.row_hash_set
-        #logging.debug('initial len(filtered): %s', len(filtered))
+        #logger.debug('initial len(filtered): %s', len(filtered))
         for key, raw_val in probe.items():
             if key not in self.indices:
                 self.index(key)
@@ -106,9 +114,9 @@ class Collection(object):
             else:
                 candidates = reduce(operator.__or__, map(idx.get, raw_val), set())
                 filtered = filtered & candidates
-            #logging.debug('len(filtered): %s', len(filtered))
+            #logger.debug('len(filtered): %s', len(filtered))
         rows = map(self.row_hashes.get, filtered)
-        logging.debug('probe: %s\tlen(rows): %s', pprint.pformat(probe), len(rows))
+        logger.debug('probe: %s\tlen(rows): %s', pprint.pformat(probe), len(rows))
         return rows
     
     def distinct(self, key):
@@ -129,22 +137,22 @@ class Collection(object):
 def make_limn_rows(rows, col_prim_key, count_key = 'count'):
     if not rows:
         return
-    logging.debug('making limn rows from rows with keys:%s', rows[0].keys())
-    logging.debug('col_prim_key: %s', col_prim_key)
-    logging.debug('len(rows): %s', len(rows))
+    logger.debug('making limn rows from rows with keys:%s', rows[0].keys())
+    logger.debug('col_prim_key: %s', col_prim_key)
+    logger.debug('len(rows): %s', len(rows))
     rows = map(dict, rows) # need real dicts, not sqlite.Rows
 
     filtered = filter(lambda r : r['cohort'] in ['all', '5+', '100+'], rows)
 
     transformed = []
-    # logging.debug('transforming rows to {\'date\' : end, \'%s (cohort)\' : count}', col_prim_key)
+    # logger.debug('transforming rows to {\'date\' : end, \'%s (cohort)\' : count}', col_prim_key)
     for row in filtered:
         if col_prim_key in row:
             transformed.append({'date' : row['end'], '%s (%s)' % (row[col_prim_key], row['cohort']) : row[count_key]})
         else:
-            logging.debug('row does not contain col_prim_key (%s): %s', col_prim_key, row)
+            logger.debug('row does not contain col_prim_key (%s): %s', col_prim_key, row)
 
-    logging.debug('len(transformed): %s', len(transformed))
+    logger.debug('len(transformed): %s', len(transformed))
     limn_rows = []
     for date, date_rows in itertools.groupby(sorted(transformed, key=itemgetter('date')), key=itemgetter('date')):
         limn_row = {'date' : date}
@@ -166,33 +174,33 @@ def write_default_graphs(source, limn_id, limn_name, basedir):
 
 
 def write_project(proj, rows, basedir):
-    logging.debug('writing project datasource for: %s', proj)
+    logger.debug('writing project datasource for: %s', proj)
     limn_id = proj + '_all'
     name = '%s Editors by Country' % proj.upper()
 
     proj_rows = rows.find({'project' : proj})
-    logging.debug('len(proj_rows): %d', len(proj_rows))
+    logger.debug('len(proj_rows): %d', len(proj_rows))
     limn_rows = make_limn_rows(proj_rows, 'country')
     source = limnpy.DataSource(limn_id, name, limn_rows)
     source.write(basedir=basedir)
 
 
 def write_project_mysql(proj, cursor, basedir):
-    logging.debug('writing project datasource for: %s', proj)
+    logger.debug('writing project datasource for: %s', proj)
     limn_id = proj + '_all'
     limn_name = '%s Editors by Country' % proj.upper()
 
     if sql.paramstyle == 'qmark':
         query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=? AND end = start + INTERVAL 30 day"""
-        logging.debug('making query: %s', query)
+        logger.debug('making query: %s', query)
     elif sql.paramstyle == 'format':
         query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=%s AND end = start + INTERVAL 30 day"""
     cursor.execute(query, [proj])
     proj_rows = cursor.fetchall()
     
-    logging.debug('len(proj_rows): %d', len(proj_rows))
+    logger.debug('len(proj_rows): %d', len(proj_rows))
     if not proj_rows and sql.paramstyle == 'format':
-        logging.debug('GOT NUTHIN!: %s', query % proj)
+        logger.debug('GOT NUTHIN!: %s', query % proj)
         return
     limn_rows = make_limn_rows(proj_rows, 'country')
     source = limnpy.DataSource(limn_id, limn_name, limn_rows)
@@ -204,7 +212,7 @@ def top_k_countries(rows, k, probe):
     filtered_rows = Collection(rows.find(probe))
     country_rows = merge_rows(['country'], filtered_rows)
     country_totals = dict(map(itemgetter('country', 'count'), country_rows))
-    #logging.debug(sorted(map(list,map(reversed,country_totals.items())), reverse=True))
+    #logger.debug(sorted(map(list,map(reversed,country_totals.items())), reverse=True))
     sorted_countries = zip(*sorted(map(list,map(reversed,country_totals.items())), reverse=True))
     if sorted_countries:
         keep_countries = sorted_countries[1][:min(k, len(country_totals))]
@@ -225,7 +233,7 @@ def write_project_top_k(proj, rows, basedir, k=10):
 
 
 def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
-    logging.debug('entering')
+    logger.debug('entering')
     limn_id = proj + '_top%d' % k
     limn_name = '%s Editors by Country (top %d)' % (proj.upper(), k)
 
@@ -239,12 +247,12 @@ def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
                     FROM erosen_geocode_active_editors_country
                     WHERE project=%s AND cohort='all'
                     ORDER BY count DESC LIMIT %s"""
-        logging.debug('top k query: %s', top_k_query % (proj, k))
+        logger.debug('top k query: %s', top_k_query % (proj, k))
     cursor.execute(top_k_query, (proj, k)) # mysqldb first converts all args to str
     top_k = map(itemgetter('country'), cursor.fetchall())
-    logging.debug('proj: %s, top_k countries: %s', proj, top_k)
+    logger.debug('proj: %s, top_k countries: %s', proj, top_k)
     if not top_k:
-        logging.warning('not country edits found for proj: %s', proj)
+        logger.warning('not country edits found for proj: %s', proj)
         return
 
     if sql.paramstyle == 'qmark':
@@ -253,17 +261,17 @@ def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
         query = query % country_fmt
     elif sql.paramstyle == 'format':
         country_fmt = '(%s)' % ', '.join([' %s ']*len(top_k))
-        logging.debug('country_fmt: %s', country_fmt)
+        logger.debug('country_fmt: %s', country_fmt)
         query = """ SELECT * FROM erosen_geocode_active_editors_country WHERE project=%s  AND end = start + INTERVAL 30 day AND country IN """
         query = query + country_fmt
         args = [proj]
         args.extend(top_k)
         print_query = query % tuple(args)
-        logging.debug('top_k edit count query: %s', print_query)
+        logger.debug('top_k edit count query: %s', print_query)
     cursor.execute(query, [proj,] + top_k)
     proj_rows = cursor.fetchall()
 
-    logging.debug('retrieved %d rows', len(proj_rows))
+    logger.debug('retrieved %d rows', len(proj_rows))
     limn_rows = make_limn_rows(proj_rows, 'country')
     source = limnpy.DataSource(limn_id, limn_name, limn_rows)
     source.write(basedir=basedir)
@@ -271,20 +279,20 @@ def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
 
 
 def write_overall(projects, rows, basedir):
-    logging.info('writing overall datasource')
+    logger.info('writing overall datasource')
     limn_id = 'overall'
     limn_name = 'Overall Editors by Language'
 
     overall_rows = rows.find({'world' : True})
     limn_rows = make_limn_rows(overall_rows, 'project')
-    #logging.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
+    #logger.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
     source = limnpy.DataSource(limn_id, name, limn_rows)
     source.write(basedir=basedir)
     source.write_graph(basedir=basedir)
 
 
 def write_overall_mysql(projects, cursor, basedir):
-    logging.info('writing overall datasource')
+    logger.info('writing overall datasource')
     limn_id = 'overall_by_lang'
     limn_name = 'Overall Editors by Language'
 
@@ -294,7 +302,7 @@ def write_overall_mysql(projects, cursor, basedir):
     
     limn_rows = make_limn_rows(overall_rows, 'project')
     monthly_limn_rows = filter(lambda r: r['date'].day==1, limn_rows)
-    #logging.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
+    #logger.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
     source = limnpy.DataSource(limn_id, limn_name, limn_rows)
     source.write(basedir=basedir)
     source.write_graph(basedir=basedir)
@@ -306,10 +314,10 @@ def write_overall_mysql(projects, cursor, basedir):
 
 
 def merge_rows(group_keys, rows, merge_key='count', merge_red_fn=operator.__add__, red_init=0):
-    logging.debug('merging rows by grouping on: %s', group_keys)
-    logging.debug('reducing field %s with fn: %s, init_val: %s', merge_key, merge_red_fn, red_init)
+    logger.debug('merging rows by grouping on: %s', group_keys)
+    logger.debug('reducing field %s with fn: %s, init_val: %s', merge_key, merge_red_fn, red_init)
     group_vals = map(rows.distinct, group_keys)
-    #logging.debug('group_vals: %s', pprint.pformat(dict(zip(group_keys, group_vals))))
+    #logger.debug('group_vals: %s', pprint.pformat(dict(zip(group_keys, group_vals))))
     merged_rows = []
     for group_val in itertools.product(*group_vals):
         group_probe = dict(zip(group_keys, group_val))
@@ -322,7 +330,7 @@ def merge_rows(group_keys, rows, merge_key='count', merge_red_fn=operator.__add_
 
 
 def join(join_key, coll1, coll2):
-    logging.debug('joining...')
+    logger.debug('joining...')
     intersection = set(coll1.distinct(join_key)) & set(coll2.distinct(join_key))
     joined_rows = []
     for val in intersection:
@@ -330,19 +338,20 @@ def join(join_key, coll1, coll2):
         pairs = itertools.product(coll1.find(probe), coll2.find(probe))
         for row1, row2 in pairs:
             joined_rows.append(dict(row1.items() + row2.items()))
-    logging.debug('done')
+    logger.debug('done')
     return joined_rows
 
 
 def write_group_mysql(group_key, country_data, cursor, basedir):
+    logger.debug('writing group with group_key: %s', group_key)
     country_data = filter(lambda row: group_key in row, country_data)
     country_data = sorted(country_data, key=itemgetter(group_key))
     groups = itertools.groupby(country_data, key=itemgetter(group_key))
-    groups = dict(map(lambda (key, rows) : (key, map(itemgetter('country'), rows)), groups))
-    #logging.debug(pprint.pformat(groups))
+    groups = dict(map(lambda (key, rows) : (key, map(itemgetter(META_DATA_COUNTRY_FIELD), rows)), groups))
+    #logger.debug(pprint.pformat(groups))
     all_rows = []
     for group_val, countries in groups.items():
-        logging.debug('processing group_val: %s', group_val)
+        logger.debug('processing group_val: %s', group_val)
         if sql.paramstyle == 'qmark':
             group_query = """SELECT end, cohort, SUM(count) 
                          FROM erosen_geocode_active_editors_country
@@ -364,11 +373,12 @@ def write_group_mysql(group_key, country_data, cursor, basedir):
         for row in group_rows:
             row.update({group_key : group_val})
         all_rows.extend(group_rows)
-    #logging.debug('groups_rows: %s', group_rows)
+    #logger.debug('groups_rows: %s', group_rows)
 
     limn_rows = make_limn_rows(all_rows, group_key, count_key='SUM(count)')
     limn_id = group_key.replace(' ', '_').lower()
     limn_name = group_key.title()
+    logger.debug('limn_rows: %s', limn_rows)
     source = limnpy.DataSource(limn_id, limn_name, limn_rows)
     source.write(basedir=basedir)
     source.write_graph(basedir=basedir)
@@ -377,14 +387,14 @@ def write_group_mysql(group_key, country_data, cursor, basedir):
 def write_group(group_key, rows, basedir):
     group_rows = merge_rows([group_key, 'cohort', 'date'], rows)
     if not group_rows:
-        logging.warning('group_rows for group_key: %s is empty! (group_rows: %s)', group_key, group_rows)
+        logger.warning('group_rows for group_key: %s is empty! (group_rows: %s)', group_key, group_rows)
     limn_rows = make_limn_rows(group_rows, group_key)
     if limn_rows:
         source = limnpy.DataSource(group_key.replace(' ', '_').lower(), group_key.replace('_', ' ').title(), limn_rows)
         source.write(basedir=basedir)
         source.write_graph(basedir=basedir)
     else:
-        logging.warning('limn_rows for group_key: %s is empty! (limn_rows: %s)', group_key, limn_rows)
+        logger.warning('limn_rows for group_key: %s is empty! (limn_rows: %s)', group_key, limn_rows)
 
 def parse_args():
 
@@ -415,7 +425,7 @@ def parse_args():
         )
 
     args = parser.parse_args()
-    logging.info(pprint.pformat(vars(args), indent=2))
+    logger.info(pprint.pformat(vars(args), indent=2))
     return args
 
 def get_projects():
@@ -428,7 +438,7 @@ def get_projects():
 
 def process_project_par((project, basedir)):
     try:
-        logging.info('processing project: %s', project)
+        logger.info('processing project: %s', project)
         db = sql.connect(read_default_file=os.path.expanduser('~/.my.cnf.research'), db='staging')
         cursor = db.cursor(MySQLdb.cursors.DictCursor)
 
@@ -437,11 +447,11 @@ def process_project_par((project, basedir)):
         write_project_mysql(project, cursor, args.basedir)
         write_project_top_k_mysql(project, cursor, args.basedir, k=args.k)
     except:
-        logging.exception('caught exception in process:')
+        logger.exception('caught exception in process:')
         raise    
 
 def process_project(project, cursor, basedir):
-    logging.info('processing project: %s (%d/%d)', project, i, len(projects))
+    logger.info('processing project: %s (%d/%d)', project, i, len(projects))
     write_project_mysql(project, cursor, args.basedir)
     write_project_top_k_mysql(project, cursor, args.basedir, k=args.k)
     
@@ -454,10 +464,20 @@ if __name__ == '__main__':
     # db.row_factory = sql.Row
     cursor = db.cursor()
 
+    # # use metadata from Google Drive doc which lets us group by country
+    country_data = gcat.get_file(META_DATA_TITLE, sheet=META_DATA_SHEET, fmt='dict', usecache=False)
+    # logger.debug('typ(country_data): %s', type(country_data))
+    # logger.info('country_data[0].keys: %s', country_data[0].keys())
+
+    write_group_mysql(META_DATA_REGION_FIELD, country_data, cursor, args.basedir)
+    write_group_mysql(META_DATA_GLOBAL_SOUTH_FIELD, country_data, cursor, args.basedir)
+
+    write_group_mysql(META_DATA_COUNTRY_FIELD, country_data, cursor, args.basedir)
+
     projects = get_projects()
     if not args.parallel or sql.threadsafety < 2:
         for i, project in enumerate(projects):
-            logging.info('processing project: %s (%d/%d)', project, i, len(projects))
+            logger.info('processing project: %s (%d/%d)', project, i, len(projects))
             process_project(project, cursor, args.basedir)
     else:
         pool = multiprocessing.Pool(20)
@@ -465,12 +485,4 @@ if __name__ == '__main__':
 
     write_overall_mysql(projects, cursor, args.basedir)
 
-    # # use metadata from Google Drive doc which lets us group by country
-    country_data = gcat.get_file('Global South and Region Classifications', sheet='data', fmt='dict', usecache=True)
-    # logging.debug('typ(country_data): %s', type(country_data))
-    # logging.info('country_data[0].keys: %s', country_data[0].keys())
 
-    write_group_mysql('country', country_data, cursor, args.basedir)
-    write_group_mysql('region', country_data, cursor, args.basedir)
-    write_group_mysql('global_south', country_data, cursor, args.basedir)
-    write_group_mysql('catalyst', country_data, cursor, args.basedir)

@@ -18,8 +18,9 @@ logger.debug('got logger for count.py with name: %s', __name__)
 
 import sys, os, argparse
 import datetime, dateutil
+import math
 import gzip
-import subprocess, multiprocessing
+import subprocess, multiprocessing, signal
 import pprint
 import re
 import pandas as pd
@@ -80,10 +81,37 @@ LEVELS = {'DEBUG': logging.DEBUG,
 
 SQUID_DATE_FMT = '%Y%m%d'
 
-VERSIONS = {'X' : 'X : Main', 'M' : 'M : Mobile', 'Z' : 'Z : Zero'}
+VERSIONS = {'X' : 'X', 'M' : 'M', 'Z' : 'Z', 'Country' : 'Country'}
+VERSIONS_LONG = {'X' : 'Page views from partner to desktop (non-mobile) Wikipedia urls',
+                'M' : 'Page views from partner to m.wikipedia.org urls',
+                'Z' : 'Page views from partner to zero.wikipedia.org',
+                'M+Z' : 'Combined page views from partner to m.wikipedia.org and zero.wikipedia.org urls',
+                'Country' : 'Total page views within country (all networks, not just partner) to m.wikipedia.org and zero.wikipedia.org urls'}
 
 FIELDS = ['date', 'lang', 'project', 'site', 'country', 'provider']
 COUNT_FIELDS = ['count'] + FIELDS
+
+
+def make_extended_legend(versions, country='country', partner='partner'):
+    table = lambda s : '<table vspace=\"20\">%s</table>' % s
+    row = lambda s : '<tr>%s</tr>' % s
+    cell = lambda s : '<td>%s</td>' % s
+    top_right_cell = lambda s : '<td valign=\"top\" align=\"right\">%s</td>' % s
+    country_replace = lambda s : s.replace('country', country)
+    partner_replace = lambda s : s.replace('partner', partner)
+    bold = lambda s : '<strong>%s</strong>' % s
+    title = lambda s : ' \n <h3>Extended Legend<h3> \n %s' % s
+
+    rows = ''
+    for v in versions:
+        cells = top_right_cell(bold(VERSIONS[v])) + cell(VERSIONS_LONG[v])
+        rows += row(cells)
+    t = table(rows)
+    final = title(t)
+    final = country_replace(final)
+    final = partner_replace(final)
+    return final
+
 
 def count_file((fname, cache_dir, filter_by_mobile)):
     logger.debug('processing file: %s', fname)
@@ -91,58 +119,72 @@ def count_file((fname, cache_dir, filter_by_mobile)):
         os.mkdir(cache_dir)
     cache_fname = os.path.join(cache_dir, os.path.split(fname)[1] + '.counts')
     try:
-        with open(cache_fname, 'w') as cache_file: # create the output file at the beginning as a simple lock
+        cache_file = open(cache_fname, 'w')
 
-            fin = gzip.GzipFile(fname)
-            ctr = Counter()
-            for i, line in enumerate(fin):
-                if i % 100000 == 0:
-                    logger.debug('processed %d lines', i)
-                try:
-                    row = sqproc.SquidRow(line)
-                except ValueError:
-                    continue
+        fin = gzip.GzipFile(fname)
+        ctr = Counter()
+        for i, line in enumerate(fin):
+            if i % 100000 == 0:
+                logger.debug('processed %d lines', i)
+            try:
+                row = sqproc.SquidRow(line)
+            except ValueError:
+                continue
 
-                if filter_by_mobile and not row['old_init_request']:
-                    continue
+            if filter_by_mobile and not row['old_init_request']:
+                continue
 
-                try:
-                    dt = row['datetime'].date()
-                except ValueError:
-                    continue
-                
-                try:
-                    ctr[tuple(map(str, map(row.__getitem__, FIELDS)))] += 1
-                except:
-                    logger.exception('error retrieving values from row: %s', row)
+            try:
+                dt = row['datetime'].date()
+            except ValueError:
+                continue
 
-            raw_counts = map(lambda (key, count) : [count] + list(key), ctr.items())
-            counts = pd.DataFrame(raw_counts)
-            date_col_ind = COUNT_FIELDS.index('date')
-            counts[date_col_ind] = pd.to_datetime(counts[date_col_ind])
-            logger.debug('counts:\n %s', counts)
-            counts.to_csv(cache_file, index=False)
-            cache_file.close()
-            logger.debug('wrote file to: %s', cache_fname)
-            return counts
+            try:
+                ctr[tuple(map(str, map(row.__getitem__, FIELDS)))] += 1
+            except:
+                logger.exception('error retrieving values from row: %s', row)
+
+        raw_counts = map(lambda (key, count) : [count] + list(key), ctr.items())
+        counts = pd.DataFrame(raw_counts)
+        date_col_ind = COUNT_FIELDS.index('date')
+        counts[date_col_ind] = pd.to_datetime(counts[date_col_ind])
+        logger.debug('counts:\n %s', counts)
+        counts.to_csv(cache_file, index=False, header=False)
+        cache_file.close()
+        logger.debug('wrote file to: %s', cache_fname)
+        return (fname, counts)
     except:
         logger.exception('caught exception in subprocess:')
         os.remove(cache_fname)
         raise
 
         
-        
+def init_worker():
+    signal.signal(signal.SIGINT, signal.SIG_IGN)    
 
-def count_views(fnames, cache, cache_dir, filter_by_mobile):
-    pool = multiprocessing.Pool(min(len(fnames),14))
-    counts = pool.map_async(count_file, zip(fnames, itertools.repeat(cache_dir), itertools.repeat(filter_by_mobile))).get(float('inf'))
+def clean_up(finished_fnames, all_fnames, cache_dir):
+    pass
+
+def count_views(fnames, cache_dir, filter_by_mobile):
+    cache = pd.DataFrame(columns=COUNT_FIELDS)
+    pool = multiprocessing.Pool(min(len(fnames),1), init_worker)
+    # counts = pool.imap(count_file, zip(fnames, itertools.repeat(cache_dir), itertools.repeat(filter_by_mobile))).get(float('inf'))
+    # finished, counts = zip(*counts)
+    counts = []
+    finished_fnames = []
+    try:
+        for fname, count in pool.imap(count_file, zip(fnames, itertools.repeat(cache_dir), itertools.repeat(filter_by_mobile))):
+            counts.append(count)
+            finished_fnames.append(fname)
+    except KeyboardInterrupt:
+        logger.exception('Caught KeyboardInterrupt, cleaning up unfinished files')
+        clean_up(finished_fnames, fnames, cache_dir)
+
     logger.debug('len(counts): %d', len(counts))
     for file_counts in counts:
         logger.debug('file_counts:\n%s', file_counts)
         cache = cache.append(file_counts, ignore_index=True)
         
-    # aggregate by date, lang, project, site, country
-    total = cache.groupby(FIELDS).sum()
     logger.debug('total counts:\n%s', total)
     return total
 
@@ -192,10 +234,21 @@ def clear_missing_days(cache, missing):
 
 
 def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only):
-    cache = pd.DataFrame(columns=COUNT_FIELDS)
+    counts = pd.DataFrame(columns=COUNT_FIELDS)
     date_col_ind = COUNT_FIELDS.index('date')
     num_cached = len(os.listdir(cache_dir))
     logger.info('loading %d cached files from %s', num_cached, cache_dir)
+
+    # COUNT NEW FILES
+    if not cache_only:
+        files = get_files(basedir)
+        # -7 because '.counts' is 7 chars long
+        cached_files = map(lambda f : f[:-len('.counts')], os.listdir(cache_dir)) if os.path.exists(cache_dir) else []
+        filtered = filter(lambda f : f not in cached_files, files)
+        logger.info('parsing  %d files from %s', len(filtered), cache_dir)
+        counts = count_views(filtered, cache_dir, filter_by_mobile)
+
+    # LOAD CACHED COUNTS
     if os.path.exists(cache_dir):
         for i, count_file in enumerate(os.listdir(cache_dir)):
             # if i > 2:
@@ -204,23 +257,19 @@ def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only):
                 df = pd.read_table(os.path.join(cache_dir, count_file), parse_dates=[date_col_ind], sep=',',  header=None)
                 df.columns = COUNT_FIELDS
                 logging.debug('loaded %d lines from %s (%d / %d)', len(df), count_file, i, num_cached)
-                cache = cache.append(df)
+                counts = counts.append(df)
             except:
                 logger.exception('exception caught while loading cache file: %s', count_file)
-    logger.debug('cache:\n%s', cache)
+    logger.debug('counts:\n%s', counts)
 
     missing = get_missing_files(cache_dir)
-    cache = clear_missing_days(cache, missing)
+    counts = clear_missing_days(counts, missing)
 
-    if not cache_only:
-        files = get_files(basedir)
-        # -7 because '.counts' is 7 chars long
-        cached_files = map(lambda f : f[:-7], os.listdir(cache_dir)) if os.path.exists(cache_dir) else []
-        filtered = filter(lambda f : f not in cached_files, files)
-        logger.info('parsing  %d files from %s', len(filtered), cache_dir)
-        counts = count_views(filtered, cache, cache_dir, filter_by_mobile)
-    else:
-        counts = cache
+    # deal with that fact that the same record will sometimes be split between two files
+    # and thus wind up as two different rows in the dataframe
+    # to solve this, just aggregate by all fields
+    counts = counts.groupby(FIELDS)['count'].sum().reset_index()
+    logger.debug('aggregated counts:\n%s', counts[:-1])
 
     # scale to compensate for filtering
     counts['count'] = counts['count'] * sample_rate
@@ -288,9 +337,9 @@ def make_raw_sources(provider,
                           monthly_version_source,
                           basedir):
     """
-    this function is necessary because putting two datasources together with differen
-    time ranges break the current (old) limn.  so this uses pandas to align them and create
-    a special datasource
+    this function is necessary because putting two datasources together with different
+    time ranges breaks the current (old) limn.  so this uses pandas to align them and create
+    a special graph-specific datasource
     """
     provider_underscore = provider.replace('-','_')
     provider_title = provider.replace('-',' ').title()
@@ -304,7 +353,7 @@ def make_raw_sources(provider,
                             left_index=True, right_index=True)
     # add a combined M + Z source
     if VERSIONS['M'] in daily_raw_df.columns and VERSIONS['Z'] in daily_raw_df.columns:
-        daily_raw_df['M + Z : Mobile + Zero'] = daily_raw_df[VERSIONS['M']] + daily_raw_df[VERSIONS['Z']]
+        daily_raw_df['M + Z'] = daily_raw_df[VERSIONS['M']] + daily_raw_df[VERSIONS['Z']]
     daily_raw_df = daily_raw_df[:-1]
     daily_raw_source = limnpy.DataSource('%s_daily_wp_views_with_country' % provider_underscore,
                                          '%s Daily WP Views With Total %s WP Views' % (provider_title, country),
@@ -349,7 +398,7 @@ def make_percent_sources(provider,
     # daily_percent_df = pd.DataFrame(daily_percent_df[daily_percent_df[0] < 1])
     daily_percent_df = daily_percent_df * 100
     daily_percent_df = daily_percent_df.reset_index()
-    daily_percent_df.columns = ['date', 'country_percent']
+    daily_percent_df.columns = ['date', 'Country Percentage Share']
     daily_percent_source = limnpy.DataSource('%s_daily_wp_views_as_percent_country_share' % provider_underscore,
                                               '%s Daily WP Views as Percentage Share of %s WP Views' % (provider_title,country),
                                               daily_percent_df)
@@ -377,7 +426,7 @@ def make_summary(datasources, basedir):
     for provider, datasource in datasources.items():
         # logger.debug('vm: %s', vm)
         start_date = vm.ix[provider, 'Start Date']
-        if not start_date: # this means that the provider isn't yet live
+        if not start_date or (isinstance(start_date, float) and math.isnan(start_date)): # this means that the provider isn't yet live
             continue
         valid_df = datasource.__data__[datasource.__data__.index > start_date]
         # logger.debug('valid_df: %s', valid_df)
@@ -395,14 +444,23 @@ def make_summary(datasources, basedir):
     # logger.debug('long_fmt.columns: %s', long_fmt.columns)
     final = long_fmt.groupby('date').sum()
     final['All Versions'] = final.sum(axis=1)
+    final = final[:-1]
     # logger.debug('final: %s', final)
     total_ds = limnpy.DataSource('free_mobile_traffic_by_version', 'Free Mobile Traffic by Version', final)
     total_ds.write(basedir)
     total_graph = total_ds.get_graph()
-    total_graph.__graph__['desc'] = "This graph shows the total number of free page requests coming "\
-    "from all of our mobile partners for each version.  The counts from a particular partner are only included "\
-    "from the public start date onward, so keep that in mind when interpreting drastic increases."
+    total_graph.__graph__['desc'] = "The [Wikipedia Zero](http://www.mediawiki.org/wiki/Wikipedia_Zero) initiative works with mobile phone operators to enable mobile access to wikipedia free of data charges.  Operators provide free access to either the [full mobile site](http://en.m.wikipedia.org) or the [mobile site without images](http://en.zero.wikipedia.org).  This graph shows the total number of free page requests coming from all of our mobile partners for each of those versions.  We only consider the requests for the versions to which each operator provides free access, and we only begin counting requests after the public start date for each operator."
+    total_graph.__graph__['desc'] += make_extended_legend(['M+Z', 'M', 'Z'])
     total_graph.write(basedir)
+
+    final_monthly = final.resample(rule='M', how='sum', label='right')
+    final_monthly = final_monthly[:-1]
+    total_ds_monthly = limnpy.DataSource('free_mobile_traffic_by_version_monthly', 'Monthly Free Mobile Traffic by Version', final_monthly)
+    total_ds_monthly.write(basedir)
+    total_graph_monthly = total_ds_monthly.get_graph()
+    total_graph_monthly.__graph__['desc'] = total_graph.__graph__['desc']
+    total_graph_monthly.write(basedir)
+    
 
 
 def make_graphs(counts, sampled_counts, providers, basedir):
@@ -428,13 +486,16 @@ def make_graphs(counts, sampled_counts, providers, basedir):
         # main tab ###################################################
         daily_version_graph = daily_version_source.get_graph([VERSIONS['M'], VERSIONS['Z']])
         #daily_version_graph.__graph__['options']['stackedGraph'] = True
+        daily_version_graph.__graph__['desc'] = make_extended_legend(['M', 'Z'])
         daily_version_graph.write(basedir)
+
 
         monthly_version_graph = monthly_version_source.get_graph([VERSIONS['M'], VERSIONS['Z']])
         #monthly_version_graph.__graph__['options']['stackedGraph'] = True
         monthly_version_graph.__graph__['desc'] = "This graph is identical to the daily version except that it has been "\
         "aggregated by month.  Each monthly bin is backwards looking, meaning that the aggregate counts are "\
         "plotted as the last day of that month.  So the aggregate count for October would be plotted on October 31. "
+        monthly_version_graph.__graph__['desc'] += make_extended_legend(['M','Z'])
         monthly_version_graph.write(basedir)
 
         db.add_tab('Versions', [daily_version_graph.__graph__['slug'], monthly_version_graph.__graph__['slug']])
@@ -455,6 +516,7 @@ def make_graphs(counts, sampled_counts, providers, basedir):
         daily_raw_graph = daily_raw_source.get_graph()
         daily_raw_graph.__graph__['desc'] = "This graph compares the number of page requests from the provider IP ranges "\
         "for each wikipedia version with the total number of page views to the mobile site from the entire country of %s." % country
+        daily_raw_graph.__graph__['desc'] +=  make_extended_legend(['X', 'M', 'Z', 'Country'], country=country, partner=provider)
 
         daily_raw_graph.write(basedir)
 
@@ -462,6 +524,7 @@ def make_graphs(counts, sampled_counts, providers, basedir):
         monthly_raw_graph.__graph__['desc'] = "This graph is identical to the daily version except that it has been "\
         "aggregated by month.  Each monthly bin is backwards looking, meaning that the aggregate counts are "\
         "plotted as the last day of that month.  So the aggregate count for October would be plotted on October 31."
+        monthly_raw_graph.__graph__['desc'] += make_extended_legend(['X', 'M', 'Z', 'Country'], country=country, partner=provider)
         monthly_raw_graph.write(basedir)
         db.add_tab('Country Raw', [daily_raw_graph.__graph__['slug'], monthly_raw_graph.__graph__['slug']])
 
