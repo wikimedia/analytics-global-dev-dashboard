@@ -2,6 +2,10 @@
 *.egg
 *.egg-info
 *~
+*.csv
 datafiles
 datasources
+graphs
+dashboards
+data
 
