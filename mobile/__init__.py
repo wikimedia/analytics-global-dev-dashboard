@@ -29,7 +29,7 @@ import itertools
 from collections import defaultdict, Counter
 import copy
 
-import sqproc
+import squid
 import gcat
 import limnpy
 
@@ -45,6 +45,7 @@ DEFAULT_PROVIDERS = ['digi-malaysia',
                      'tata-india',
                      'saudi-telecom',
                      'dtac-thailand']
+                     #'tim-brasil']
 
 PROVIDER_COUNTRY_CODES = {'digi-malaysia' : 'MY',
              'grameenphone-bangladesh' : 'BD',
@@ -57,10 +58,12 @@ PROVIDER_COUNTRY_CODES = {'digi-malaysia' : 'MY',
              'telenor-montenegro' : 'ME',
              'tata-india' : 'IN',
              'saudi-telecom' : 'SA',
-             'dtac-thailand' : 'TH'}
+             'dtac-thailand' : 'TH',
+             'tim-brasil' : 'BR'}
 
 COUNTRY_NAMES = {'MY' : 'Malaysia',
                  'BD' : 'Bangladesh',
+                 'BR' : 'Brazil',
                  'KE' : 'Kenya',
                  'NE' : 'Niger',
                  'TN' : 'Tunisia',
@@ -81,11 +84,11 @@ LEVELS = {'DEBUG': logging.DEBUG,
 
 SQUID_DATE_FMT = '%Y%m%d'
 
-VERSIONS = {'X' : 'X', 'M' : 'M', 'Z' : 'Z', 'Country' : 'Country'}
-VERSIONS_LONG = {'X' : 'Page views from partner to desktop (non-mobile) Wikipedia urls',
-                'M' : 'Page views from partner to m.wikipedia.org urls',
-                'Z' : 'Page views from partner to zero.wikipedia.org',
-                'M+Z' : 'Combined page views from partner to m.wikipedia.org and zero.wikipedia.org urls',
+VERSIONS = {'X' : 'X', 'M' : 'M', 'M+Z' : 'M+Z', 'Z' : 'Z', 'Country' : 'Country'}
+VERSIONS_LONG = {'X' : 'Free page views from partner to desktop (non-mobile) Wikipedia urls',
+                'M' : 'Free page views from partner to m.wikipedia.org urls',
+                'Z' : 'Free page views from partner to zero.wikipedia.org',
+                'M+Z' : 'Combined free page views from partner to m.wikipedia.org and zero.wikipedia.org urls',
                 'Country' : 'Total page views within country (all networks, not just partner) to m.wikipedia.org and zero.wikipedia.org urls'}
 
 FIELDS = ['date', 'lang', 'project', 'site', 'country', 'provider']
@@ -96,11 +99,11 @@ def make_extended_legend(versions, country='country', partner='partner'):
     table = lambda s : '<table vspace=\"20\">%s</table>' % s
     row = lambda s : '<tr>%s</tr>' % s
     cell = lambda s : '<td>%s</td>' % s
-    top_right_cell = lambda s : '<td valign=\"top\" align=\"right\">%s</td>' % s
+    top_right_cell = lambda s : '<td valign=\"top\" align=\"right\">%s &nbsp;&nbsp; : &nbsp;&nbsp; </td>' % s
     country_replace = lambda s : s.replace('country', country)
     partner_replace = lambda s : s.replace('partner', partner)
-    bold = lambda s : '<strong>%s</strong>' % s
-    title = lambda s : ' \n <h3>Extended Legend<h3> \n %s' % s
+    bold = lambda s : '<strong>%s  </strong>' % s
+    title = lambda s : ' \n <h3>Extended Legend</h3> \n %s' % s
 
     rows = ''
     for v in versions:
@@ -118,6 +121,21 @@ def count_file((fname, cache_dir, filter_by_mobile)):
     if not os.path.exists(cache_dir):
         os.mkdir(cache_dir)
     cache_fname = os.path.join(cache_dir, os.path.split(fname)[1] + '.counts')
+    fields_no_prov = copy.deepcopy(FIELDS)
+    fields_no_prov.remove('provider')
+           
+    tail = os.path.split(fname)[1]
+    m_with_zero = re.match('zero-(.*)\.log-\d{8}\.gz', tail)
+    m_without_zero = re.match('(.*)\.log-\d{8}\.gz', tail)
+    sampled = re.match('sampled-1000\.log-\d{8}\.gz', tail)
+    if m_with_zero:
+        provider = m_with_zero.groups(1)[0]
+    elif m_without_zero and not sampled:
+        provider = m_without_zero.groups(1)[0]
+    else:
+        provider = ''
+    logger.debug('provider form filename: %s is %s', fname, provider)
+
     try:
         cache_file = open(cache_fname, 'w')
 
@@ -127,8 +145,9 @@ def count_file((fname, cache_dir, filter_by_mobile)):
             if i % 100000 == 0:
                 logger.debug('processed %d lines', i)
             try:
-                row = sqproc.SquidRow(line)
+                row = squid.SquidRow(line)
             except ValueError:
+                logger.exception('exception while constructing SquidRow')
                 continue
 
             if filter_by_mobile and not row['old_init_request']:
@@ -138,11 +157,15 @@ def count_file((fname, cache_dir, filter_by_mobile)):
                 dt = row['datetime'].date()
             except ValueError:
                 continue
+    
+            # if len(row['providers']) > 1:
+            #    logger.debug('providers_full: %s', row['providers_full'])    
 
+           
             try:
-                ctr[tuple(map(str, map(row.__getitem__, FIELDS)))] += 1
+                ctr[tuple(map(str, map(row.__getitem__, fields_no_prov)) + [provider])] += 1
             except:
-                logger.exception('error retrieving values from row: %s', row)
+                logger.exception('error retrieving values: %s from row: %s', fields_no_prov, row)
 
         raw_counts = map(lambda (key, count) : [count] + list(key), ctr.items())
         counts = pd.DataFrame(raw_counts)
@@ -160,14 +183,26 @@ def count_file((fname, cache_dir, filter_by_mobile)):
 
         
 def init_worker():
-    signal.signal(signal.SIGINT, signal.SIG_IGN)    
+   signal.signal(signal.SIGINT, signal.SIG_IGN)    
 
-def clean_up(finished_fnames, all_fnames, cache_dir):
-    pass
+def clean_up(finished_raw, orig_raw, cache_dir):
+    finished_counts = [os.path.join(cache_dir, os.path.split(f)[1] + '.counts') for f in finished_raw]
+    orig_counts = [os.path.join(cache_dir, f + '.counts') for f in orig_raw]
+    present = get_files(cache_dir)
+    # logger.debug('cache_dir:\t%s', cache_dir)
+    # logger.debug('orig_counts (%d):\t%s...', len(present), orig_counts[:10])
+    # logger.debug('present (%d):\t%s...', len(present), present[:10])
+    # logger.debug('finished_counts:\t%s', finished_counts)
+    remove = list((set(present) - set(orig_counts)) - set(finished_counts))
+    logger.debug('remove:\t%s', remove)
+    return None
+# for unfinished_fname in set(all_fnames) - set(finished_fnames):
+#        os.rm(os.path.join(unfinished_fname, cache_dir)
 
-def count_views(fnames, cache_dir, filter_by_mobile):
+def count_views(fnames, cached_fnames, cache_dir, filter_by_mobile):
     cache = pd.DataFrame(columns=COUNT_FIELDS)
-    pool = multiprocessing.Pool(min(len(fnames),1), init_worker)
+    pool = multiprocessing.Pool(min(len(fnames),10), init_worker)
+    # pool = multiprocessing.Pool(min(len(fnames),1))
     # counts = pool.imap(count_file, zip(fnames, itertools.repeat(cache_dir), itertools.repeat(filter_by_mobile))).get(float('inf'))
     # finished, counts = zip(*counts)
     counts = []
@@ -176,17 +211,18 @@ def count_views(fnames, cache_dir, filter_by_mobile):
         for fname, count in pool.imap(count_file, zip(fnames, itertools.repeat(cache_dir), itertools.repeat(filter_by_mobile))):
             counts.append(count)
             finished_fnames.append(fname)
-    except KeyboardInterrupt:
+    except:# KeyboardInterrupt:
         logger.exception('Caught KeyboardInterrupt, cleaning up unfinished files')
-        clean_up(finished_fnames, fnames, cache_dir)
+        clean_up(finished_fnames, cached_fnames, cache_dir)
+        sys.exit()
 
     logger.debug('len(counts): %d', len(counts))
     for file_counts in counts:
         logger.debug('file_counts:\n%s', file_counts)
         cache = cache.append(file_counts, ignore_index=True)
         
-    logger.debug('total counts:\n%s', total)
-    return total
+    logger.debug('total counts:\n%s', cache)
+    return cache
 
 
 def get_files(datadir):
@@ -233,26 +269,25 @@ def clear_missing_days(cache, missing):
     return cache
 
 
-def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only):
+def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only, debug):
     counts = pd.DataFrame(columns=COUNT_FIELDS)
     date_col_ind = COUNT_FIELDS.index('date')
-    num_cached = len(os.listdir(cache_dir))
-    logger.info('loading %d cached files from %s', num_cached, cache_dir)
 
     # COUNT NEW FILES
     if not cache_only:
-        files = get_files(basedir)
-        # -7 because '.counts' is 7 chars long
-        cached_files = map(lambda f : f[:-len('.counts')], os.listdir(cache_dir)) if os.path.exists(cache_dir) else []
-        filtered = filter(lambda f : f not in cached_files, files)
-        logger.info('parsing  %d files from %s', len(filtered), cache_dir)
-        counts = count_views(filtered, cache_dir, filter_by_mobile)
+        all_fnames = get_files(basedir)
+        cached_fnames = map(lambda f : f[:-len('.counts')], os.listdir(cache_dir)) if os.path.exists(cache_dir) else []
+        uncached_fnames = filter(lambda f : f not in cached_fnames, all_fnames)
+        logger.info('parsing  %d files from %s', len(uncached_fnames), basedir)
+        counts = count_views(uncached_fnames, cached_fnames, cache_dir, filter_by_mobile)
 
     # LOAD CACHED COUNTS
+    num_cached = len(os.listdir(cache_dir))
+    logger.info('loading %d cached files from %s', num_cached, cache_dir)
     if os.path.exists(cache_dir):
-        for i, count_file in enumerate(os.listdir(cache_dir)):
-            # if i > 2:
-            #     break
+        for i, count_file in enumerate(sorted(os.listdir(cache_dir))):
+            if debug and i > 100:
+                 break
             try:
                 df = pd.read_table(os.path.join(cache_dir, count_file), parse_dates=[date_col_ind], sep=',',  header=None)
                 df.columns = COUNT_FIELDS
@@ -268,7 +303,8 @@ def get_counts(basedir, cache_dir, sample_rate, filter_by_mobile, cache_only):
     # deal with that fact that the same record will sometimes be split between two files
     # and thus wind up as two different rows in the dataframe
     # to solve this, just aggregate by all fields
-    counts = counts.groupby(FIELDS)['count'].sum().reset_index()
+    logger.debug('counts[:10]: %s', counts[:10])
+    counts = counts.fillna(0).groupby(FIELDS)['count'].sum().reset_index()
     logger.debug('aggregated counts:\n%s', counts[:-1])
 
     # scale to compensate for filtering
@@ -283,13 +319,16 @@ def make_sampled_source(counts, basedir):
     logger.debug('daily_country_counts: %s', daily_country_counts)
     daily_country_counts_limn = daily_country_counts.pivot('date', 'country', 'count')
     daily_country_counts_limn = daily_country_counts_limn.rename(columns=COUNTRY_NAMES)
+    daily_country_counts_limn_full = copy.deepcopy(daily_country_counts_limn)
     daily_country_counts_limn = daily_country_counts_limn[:-1]
     daily_country_source = limnpy.DataSource('daily_mobile_wp_views_by_country',
                                              'Daily Mobile WP Views By Country',
                                              daily_country_counts_limn)
     daily_country_source.write(basedir)
+    logger.debug('daily_country_source: %s', daily_country_source)
 
-    monthly_country_counts = daily_country_counts_limn.resample(rule='M', how='sum', label='right')
+
+    monthly_country_counts = daily_country_counts_limn_full.resample(rule='M', how='sum', label='right')
     monthly_country_counts = monthly_country_counts[:-1]
     monthly_country_source = limnpy.DataSource('monthly_mobile_wp_views_by_country',
                                                'Monthly Mobile WP Views By Country',
@@ -315,13 +354,14 @@ def make_zero_sources(counts, provider, basedir):
     daily_version = prov_counts.groupby(['date', 'site'], as_index=False).sum()
     daily_version_limn = daily_version.pivot('date', 'site', 'count')
     daily_version_limn = daily_version_limn.rename(columns=VERSIONS)
+    daily_version_limn_full = copy.deepcopy(daily_version_limn)
     daily_version_limn = daily_version_limn[:-1]
     daily_version_source = limnpy.DataSource('%s_daily_wp_view_by_version' % provider_underscore,
                                              '%s Daily WP Views By Version' % provider_title,
                                              daily_version_limn)
     daily_version_source.write(basedir)
 
-    monthly_version = daily_version_limn.resample(rule='M', how='sum', label='right')
+    monthly_version = daily_version_limn_full.resample(rule='M', how='sum', label='right')
     monthly_version = monthly_version[:-1]
     monthly_version_source = limnpy.DataSource('%s_monthly_wp_views_by_version' % provider_underscore,
                                                '%s Monthly WP View By Version' % provider_title,
@@ -348,8 +388,13 @@ def make_raw_sources(provider,
     country = COUNTRY_NAMES[cc]
 
     # joins on date index because limnpy.DataSource DataFrames are always indexed on date
+
+    logger.debug('daily_country_source.__data__.columns: %s', daily_country_source.__data__.columns)
+    if not country in daily_country_source.__data__:
+        raise ValueError('daily_country_source has no column for country: %s (%s)' % (country, cc))
+    country_only = pd.DataFrame(daily_country_source.__data__[country])
     daily_raw_df = pd.merge(daily_version_source.__data__,
-                            pd.DataFrame(daily_country_source.__data__[country]),
+                            country_only,
                             left_index=True, right_index=True)
     # add a combined M + Z source
     if VERSIONS['M'] in daily_raw_df.columns and VERSIONS['Z'] in daily_raw_df.columns:
@@ -359,7 +404,6 @@ def make_raw_sources(provider,
                                          '%s Daily WP Views With Total %s WP Views' % (provider_title, country),
                                          daily_raw_df)
     daily_raw_source.write(basedir)
-
     monthly_raw_df = pd.merge(monthly_version_source.__data__, 
                               pd.DataFrame(monthly_country_source.__data__[country]),
                               left_index=True, right_index=True)
@@ -414,9 +458,17 @@ def make_percent_sources(provider,
                                               '%s Monthly WP Views as Percentage Share of %s WP Views' % (provider_title, country),
                                               monthly_percent_df)
     monthly_percent_source.write(basedir)
-
-
     return daily_percent_source, monthly_percent_source
+
+
+def make_summary_percent(datasources, basedir):
+    logger.debug('making percent summary!')
+    ids = []
+    g = limnpy.Graph('free_mobile_page_requests_percent_country', 'Free Mobile Page Requests as Percent of Country', [])
+    for prov, ds in datasources.items():
+        prov_title = prov.replace('-',' ').title()
+        g.add_metric(ds, 'Country Percentage Share', label=prov_title)
+    g.write(basedir, set_colors=False)
 
 def make_summary(datasources, basedir):
     vm = gcat.get_file('WP Zero Partner - Versions', fmt='pandas', usecache=True)
@@ -434,7 +486,8 @@ def make_summary(datasources, basedir):
         free_versions = set(map(VERSIONS.get, map(unicode.strip, vm.ix[provider, 'Version'].split(','))))
         valid_df = valid_df[list(free_versions & set(valid_df.columns))]
         # logger.debug('valid_df: %s', valid_df)
-        dfs.append(valid_df)
+        if len(valid_df) > 0:
+            dfs.append(valid_df)
         
     long_fmt = pd.concat(dfs)
     # logger.debug('long_fmt: %s', long_fmt)
@@ -444,16 +497,17 @@ def make_summary(datasources, basedir):
     # logger.debug('long_fmt.columns: %s', long_fmt.columns)
     final = long_fmt.groupby('date').sum()
     final['All Versions'] = final.sum(axis=1)
+    final_full = copy.deepcopy(final)
     final = final[:-1]
     # logger.debug('final: %s', final)
     total_ds = limnpy.DataSource('free_mobile_traffic_by_version', 'Free Mobile Traffic by Version', final)
     total_ds.write(basedir)
     total_graph = total_ds.get_graph()
-    total_graph.__graph__['desc'] = "The [Wikipedia Zero](http://www.mediawiki.org/wiki/Wikipedia_Zero) initiative works with mobile phone operators to enable mobile access to wikipedia free of data charges.  Operators provide free access to either the [full mobile site](http://en.m.wikipedia.org) or the [mobile site without images](http://en.zero.wikipedia.org).  This graph shows the total number of free page requests coming from all of our mobile partners for each of those versions.  We only consider the requests for the versions to which each operator provides free access, and we only begin counting requests after the public start date for each operator."
+    total_graph.__graph__['desc'] = """The <a href="http://www.mediawiki.org/wiki/Wikipedia_Zero">Wikipedia Zero</a> initiative works with mobile phone operators to enable mobile access to wikipedia free of data charges.  Operators provide free access to either the <a href="http://en.m.wikipedia.org">full mobile site</a> or the <a href="http://en.zero.wikipedia.org">mobile site without images</a>.  This graph shows the total number of free page requests coming from all of our mobile partners for each of those versions.  We only consider the requests for the versions to which each operator provides free access, and we only begin counting requests after the public start date for each operator."""
     total_graph.__graph__['desc'] += make_extended_legend(['M+Z', 'M', 'Z'])
     total_graph.write(basedir)
 
-    final_monthly = final.resample(rule='M', how='sum', label='right')
+    final_monthly = final_full.resample(rule='M', how='sum', label='right')
     final_monthly = final_monthly[:-1]
     total_ds_monthly = limnpy.DataSource('free_mobile_traffic_by_version_monthly', 'Monthly Free Mobile Traffic by Version', final_monthly)
     total_ds_monthly.write(basedir)
@@ -466,6 +520,7 @@ def make_summary(datasources, basedir):
 def make_graphs(counts, sampled_counts, providers, basedir):
     daily_country_source, monthly_country_source = make_sampled_source(sampled_counts, basedir)
     provider_version_sources = {}
+    provider_percent_sources = {}
     for provider in providers:
 
         provider_title = provider.replace('-', ' ').title()
@@ -486,19 +541,21 @@ def make_graphs(counts, sampled_counts, providers, basedir):
         # main tab ###################################################
         daily_version_graph = daily_version_source.get_graph([VERSIONS['M'], VERSIONS['Z']])
         #daily_version_graph.__graph__['options']['stackedGraph'] = True
-        daily_version_graph.__graph__['desc'] = make_extended_legend(['M', 'Z'])
+        daily_version_graph.__graph__['desc'] = "This graph shows the number of free page requests coming from the %s network to each of the "\
+         "different Wikipedia mobile sites." % (provider_title) 
+        daily_version_graph.__graph__['desc'] += make_extended_legend(['M', 'Z'])
         daily_version_graph.write(basedir)
 
 
         monthly_version_graph = monthly_version_source.get_graph([VERSIONS['M'], VERSIONS['Z']])
         #monthly_version_graph.__graph__['options']['stackedGraph'] = True
-        monthly_version_graph.__graph__['desc'] = "This graph is identical to the daily version except that it has been "\
-        "aggregated by month.  Each monthly bin is backwards looking, meaning that the aggregate counts are "\
-        "plotted as the last day of that month.  So the aggregate count for October would be plotted on October 31. "
+        monthly_version_graph.__graph__['desc'] = "This graph shows the number of free page requests coming from the %s network to each of the "\
+         "different Wikipedia mobile sites. This graph is aggregated by month such that the total page requests during a particular month are "\
+         "plotted as the last day of that month" % (provider_title)
         monthly_version_graph.__graph__['desc'] += make_extended_legend(['M','Z'])
         monthly_version_graph.write(basedir)
 
-        db.add_tab('Versions', [daily_version_graph.__graph__['slug'], monthly_version_graph.__graph__['slug']])
+        db.add_tab('Versions', [monthly_version_graph.__graph__['slug'], daily_version_graph.__graph__['slug']])
 
 
         logger.debug('starting to create country count tabs')
@@ -507,30 +564,39 @@ def make_graphs(counts, sampled_counts, providers, basedir):
 
 
         # country raw tab ############################################
-        daily_raw_source, monthly_raw_source = make_raw_sources(provider, 
+        try:
+            daily_raw_source, monthly_raw_source = make_raw_sources(provider, 
                                                                 daily_country_source,
                                                                 monthly_country_source,
                                                                 daily_version_source,
                                                                 monthly_version_source,
                                                                 basedir)
-        daily_raw_graph = daily_raw_source.get_graph()
-        daily_raw_graph.__graph__['desc'] = "This graph compares the number of page requests from the provider IP ranges "\
-        "for each wikipedia version with the total number of page views to the mobile site from the entire country of %s." % country
-        daily_raw_graph.__graph__['desc'] +=  make_extended_legend(['X', 'M', 'Z', 'Country'], country=country, partner=provider)
+        except ValueError:
+            logger.warning('provider: %s had no country data associated with it', country)
+            continue
+        graph_cols = list(daily_raw_source.__data__.columns)
+        graph_cols.remove('X')
+        daily_raw_graph = daily_raw_source.get_graph(graph_cols)
+        daily_raw_graph.__graph__['desc'] = "This graph compares the number of page requests from the %s network, "\
+        "for each version of the Wikipedia mobile site, with the total number of page requests to the Wikipedia mobile site from the entire country of %s." % (provider_title, country)
+        daily_raw_graph.__graph__['desc'] +=  make_extended_legend(['M', 'Z', 'Country'], country=country, partner=provider)
 
         daily_raw_graph.write(basedir)
 
-        monthly_raw_graph = monthly_raw_source.get_graph()
-        monthly_raw_graph.__graph__['desc'] = "This graph is identical to the daily version except that it has been "\
-        "aggregated by month.  Each monthly bin is backwards looking, meaning that the aggregate counts are "\
-        "plotted as the last day of that month.  So the aggregate count for October would be plotted on October 31."
-        monthly_raw_graph.__graph__['desc'] += make_extended_legend(['X', 'M', 'Z', 'Country'], country=country, partner=provider)
+        graph_cols = list(daily_raw_source.__data__.columns)
+        graph_cols.remove('X')
+        monthly_raw_graph = monthly_raw_source.get_graph(graph_cols)
+        monthly_raw_graph.__graph__['desc'] = "This graph compares the number of page requests from the %s network, "\
+        "for each version of the Wikipedia mobile site, with the total number of page requests to the Wikipedia mobile site from the entire country of %s."\
+        "This graph is aggregated by month such that the total page requests during a particular month are "\
+        "plotted as the last day of that month." % (provider_title, country)
+        monthly_raw_graph.__graph__['desc'] += make_extended_legend(['M', 'Z', 'Country'], country=country, partner=provider)
         monthly_raw_graph.write(basedir)
-        db.add_tab('Country Raw', [daily_raw_graph.__graph__['slug'], monthly_raw_graph.__graph__['slug']])
-
+        #db.add_tab('Country Raw', [daily_raw_graph.__graph__['slug'], monthly_raw_graph.__graph__['slug']])
+        db.add_tab('Country Raw', [monthly_raw_graph.__graph__['slug']])
 
         # country percent tab ########################################
-        daily_percent_source, monthly_percent_source = make_percent_sources(provider, 
+        daily_percent_source, monthly_percent_source = make_percent_sources(provider,
                                                                                daily_country_source,
                                                                                monthly_country_source,
                                                                                daily_version_source,
@@ -539,22 +605,25 @@ def make_graphs(counts, sampled_counts, providers, basedir):
         if daily_percent_source is None:
             logger.warning('daily_percent_source is None; skipping %s', provider)
             continue
+        provider_percent_sources[provider] = daily_percent_source
 
         daily_percent_graph = daily_percent_source.get_graph()
-        daily_percent_graph.__graph__['desc'] = "This graph shows the number of page requests from the provider IP ranges "\
-        "to the mobile and zero versions of wikipedia divided by the total number page views to those sites from the entire "\
-        "country of %s." % country
+        daily_percent_graph.__graph__['desc'] = "This graph shows the percentage of all page requests "\
+        "to the Wikipedia mobile sites originating in %s which come from the %s network."  % (country, provider_title)
         daily_percent_graph.write(basedir)
 
         monthly_percent_graph = monthly_percent_source.get_graph()
-        monthly_percent_graph.__graph__['desc'] = "This graph is identical to the daily version except that it has been "\
-        "aggregated by month.  Each monthly bin is backwards looking, meaning that the aggregate counts are "\
-        "plotted as the last day of that month.  So the aggregate count for October would be plotted on October 31."
+        monthly_percent_graph.__graph__['desc'] = "This graph shows the percentage of all page requests "\
+        "to the Wikipedia mobile sites originating in %s which come from the %s network. "\
+        "This graph is aggregated by month such that the total page requests during a particular month are "\
+        "plotted as the last day of that month."  % (country, provider_title)
         monthly_percent_graph.write(basedir)
 
-        db.add_tab('Country Percent', [daily_percent_graph.__graph__['slug'], monthly_percent_graph.__graph__['slug']])
+        #db.add_tab('Country Percent', [daily_percent_graph.__graph__['slug'], monthly_percent_graph.__graph__['slug']])
+        db.add_tab('Country Percent', [monthly_percent_graph.__graph__['slug']])
         db.write(basedir)
     make_summary(provider_version_sources, basedir)
+    make_summary_percent(provider_percent_sources, basedir)
 
 
 
@@ -593,6 +662,7 @@ def parse_args():
     parser.add_argument('--limn_basedir',
                         default='data',
                         help='basedir in which to place limn datasource/datafile/graphs/dashboards directories')
+    parser.add_argument('--debug', default=False, action='store_true', help='limits to loading only 2 files from zero/sampled-cache')
 
     args = parser.parse_args()
     opts = vars(args)
@@ -608,15 +678,15 @@ def main():
                              opts['zero_cache'],
                              sample_rate=10,
                              filter_by_mobile=False,
-                             cache_only=opts['cache_only'])
-                             # cache_only=True)
+                             cache_only=opts['cache_only'],
+                             debug=opts['debug'])
 
     sampled_counts = get_counts(opts['sampled_datadir'], 
                                 opts['sampled_cache'], 
                                 sample_rate=1000, 
                                 filter_by_mobile=True,
-                                cache_only=opts['cache_only'])
-                                # cache_only=False)
+                                cache_only=opts['cache_only'],
+                                debug=opts['debug'])
     make_graphs(zero_counts, sampled_counts, opts['providers'], opts['limn_basedir'])
     
 
