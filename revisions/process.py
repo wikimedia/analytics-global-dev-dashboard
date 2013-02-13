@@ -1,3 +1,4 @@
+import copy
 import argparse
 from operator import itemgetter
 import MySQLdb
@@ -178,7 +179,7 @@ def get_size(revs):
         print 'cohort: %s, df:\n%s' % (cohort,df)
     return dfs
 
-def make_graphs(dfs, lang, basedir):
+def make_bytes_graphs(dfs, lang, basedir):
     # index on dates
 
     date_dfs = {}
@@ -206,9 +207,9 @@ def make_graphs(dfs, lang, basedir):
     # merge daily bytes added (deltas) and write csvs
     full_delta_daily = pd.DataFrame({cohort : df['delta'].asfreq('1D').fillna(0.0) for cohort, df in date_dfs.items()})
     for cohort, df in date_dfs.items():
-        df.to_csv('orig_delta.%s.csv' % cohort)
+        df.to_csv('%s.orig_delta.%s.csv' % (lang,cohort))
     full_delta_daily['total'] = full_delta_daily.sum(axis=1)
-    full_delta_daily.to_csv('full_delta_daily')
+    full_delta_daily.to_csv('%s.full_delta_daily.csv' % lang)
     
     # make daily bytes added (deltas) graph
     ds_delta_daily = limnpy.DataSource('%s_bytes_added_daily' % lang, '%sWP Bytes Added Daily' % lang.upper(), full_delta_daily)
@@ -220,7 +221,28 @@ def make_graphs(dfs, lang, basedir):
     ds_delta_monthly = limnpy.DataSource('%s_bytes_added_monthly' % lang, '%sWP Bytes Added Monthly' % lang.upper(), delta_monthly)
     ds_delta_monthly.write(basedir)
     ds_delta_monthly.write_graph(basedir=basedir)
-    
+   
+
+def make_rev_graphs(revs, lang, basedir):
+    revs = copy.deepcopy(revs) 
+    #for size, ts, page_id, user_id, cohort in revs.itertuples(index=False):
+    date_parser = lambda s : datetime.datetime.strptime(str(int(s))[:len('YYYYMMDD')], '%Y%m%d')
+    revs['rev_timestamp'] = revs['rev_timestamp'].map(date_parser)
+    counts = pd.DataFrame({'revisions' : revs.groupby(['rev_timestamp','cohort']).size()})
+    counts = counts.reset_index().rename({'rev_timestamp' : 'date'})
+    counts = counts.pivot(index='rev_timestamp', columns='cohort', values='revisions')
+    counts['total'] = counts.sum(axis=1)
+    print counts
+    ds_rev_daily = limnpy.DataSource('%s_revs_daily' % lang, '%sWP Daily Revisions' % lang.upper(), counts)
+    ds_rev_daily.write(basedir)
+    ds_rev_daily.write_graph(basedir=basedir)
+
+    counts_monthly = counts.resample(rule='M', how='sum', label='right')
+    ds_rev_monthly = limnpy.DataSource('%s_revs_monthly' % lang, '%sWP Monthly Revisions' % lang.upper(), counts_monthly)
+    ds_rev_monthly.write(basedir)
+    ds_rev_monthly.write_graph(basedir=basedir)
+
+
 def load_lang_file(f):
     return map(itemgetter(0),map(str.split, filter(lambda l: not l.startswith('#') and len(l) > 0, open(f).read().split('\n'))))
 
@@ -240,6 +262,7 @@ def main():
             cur = get_cur(lang)
 
             rev = get_rev(lang, start_date, cur)
+
             bots = get_bots(lang, cur)
             page = get_page(lang, cur)
 
@@ -247,7 +270,8 @@ def main():
             rev = tag_bots(rev, bots)
             dfs = get_size(rev)
         
-            make_graphs(dfs, lang, opts['basedir'])
+            make_rev_graphs(rev, lang, opts['basedir'])
+            make_bytes_graphs(dfs, lang, opts['basedir'])
 
         finally:
             print 'closing cursor'
