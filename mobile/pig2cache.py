@@ -23,6 +23,7 @@ for line in in_file:
         toks = line.strip().split(',')
         orig_f = toks[0]
 
+        orig_f = orig_f.replace('tab.', '')
         m_with_zero = re.match('zero-(.*)\.log-\d{8}\.gz', orig_f)
         m_without_zero = re.match('(.*)\.log-\d{8}\.gz', orig_f)
         sampled = re.match('sampled-1000\.log-\d{8}\.gz', orig_f)
