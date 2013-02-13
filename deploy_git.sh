@@ -5,7 +5,7 @@
 
 cd /home/erosen/src/dashboard/
 
-for source in "geowiki" "grants" "mobile" "historical"
+for source in "geowiki" "grants" "mobile" "historical" "db_size"
 do
     for type in "dashboards" "datasources" "datafiles" "graphs"
     do
