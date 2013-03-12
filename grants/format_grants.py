@@ -72,10 +72,10 @@ def write_limn_files(pt, val_key=None, group_key=None, limn_id=None, limn_name=N
         return g
     except:
         logger.debug('error on limn_name: %s', limn_name)
-        logger.debug('ds.__source__:\n %s', pprint.pformat(ds.__source__))
-        logger.debug('type(ds.__data__):%s', type(ds.__data__))
-        logger.debug('ds.__data__.columns: %s', ds.__data__.columns)
-        logger.debug('ds.__data__.index: %s', ds.__data__.index)
+        logger.debug('ds.source:\n %s', pprint.pformat(ds.source))
+        logger.debug('type(ds.data):%s', type(ds.data))
+        logger.debug('ds.data.columns: %s', ds.data.columns)
+        logger.debug('ds.data.index: %s', ds.data.index)
         raise
 
 
@@ -133,9 +133,9 @@ def write_total(all_rows):
 
 
 def add_global_south(rows):
-    meta = gcat.get_file('Global South and Region Classifications', fmt='pandas', sheet='MaxMind Countries Final')
+    meta = gcat.get_file('Global South and Region Classifications', fmt='pandas', sheet='data')
     logger.debug('meta:\n%s', meta)
-    labels = dict(meta[['Country', 'global south']].values)
+    labels = dict(meta[['MaxMind Country', 'Global South']].values)
 
     req_gs = rows['Country of requestor (short form)'].apply(lambda c : labels.get(c,'Unkown Country Name'))
     rows['Global South (requestor)'] = req_gs
