@@ -11,9 +11,7 @@ import os
 import MySQLdb as sql
 #import sqlite3 as sql
 import MySQLdb.cursors
-from profilehooks import profile
 import multiprocessing
-import traceback
 
 import limnpy
 import gcat
@@ -34,105 +32,7 @@ META_DATA_COUNTRY_FIELD = 'MaxMind Country'
 META_DATA_REGION_FIELD = 'Region'
 META_DATA_GLOBAL_SOUTH_FIELD = 'Global South'
 
-def flatten(nest, path=[], keys=[]):
-    #logger.debug('entering with type(nest):%s,\tpath: %s' % (type(nest), path))
-    # try to use as dict
-    try:
-        #logger.debug('trying to use as dict')
-        for k, v in nest.items():
-            #logger.debug('calling flatten(%s, %s)' % (k, v))
-            for row in flatten(v, path + [k], keys):
-                yield row
-    except AttributeError:
-        #logger.debug('nest has not attribute \'items()\'')
-        # try to use as list
-        try:
-            #logger.debug('trying to use as list')
-            for elem in nest:
-                for row in flatten(elem, path, keys):
-                    yield row
-        except TypeError:
-            #logger.debug('nest object of type %s is not iterable' % (type(nest)))
-            #logger.debug('reached leaf of type: %s' % (type(nest)))
-            # must be a leaf, finally yield
-            #logger.debug('yielding %s' % (path + [nest]))
-            yield dict(zip(keys, path + [nest]))
-
-
-def load_json_files(files):
-    limn_fmt = '%Y/%m/%d'
-
-    json_all = []
-    for f in files:
-        json_f = json.load(open(f, 'r'))
-        json_f['end'] = dateutil.parser.parse(json_f['end']) 
-        json_f['start'] = dateutil.parser.parse(json_f['start'])
-        if (json_f['end'] - json_f['start']).days != 30:
-            logger.info('skipping file: because it is not a 30 day period')
-            continue
-        json_f['end'] = json_f['end'].strftime(limn_fmt)
-        json_f['start'] = json_f['start'].strftime(limn_fmt)
-        json_all.append(json_f)
-    return json_all
-
-
-class Collection(object):
-
-    def __init__(self, rows, index_keys=[]):
-        self.row_hashes = {hash(frozenset(row.items())) : row for row in rows}
-        self.row_hash_set = frozenset(self.row_hashes.keys())
-        self.indices = {}
-        for key in index_keys:
-            self.index(key)
-
-    def __iter__(self):
-        return iter(self.row_hashes.values())
-
-    def index(self, key):
-        logger.debug('creating index for key: %s', key)
-        idx = defaultdict(set)
-        for row_hash, row in self.row_hashes.items():
-            if key in row:
-                idx[row[key]].add(row_hash)
-        self.indices[key] = idx
-        logger.debug('finished creating index for key: %s', key)
-
-    @classmethod
-    def is_iterable(cls, val):
-        return isinstance(val, Container) and not isinstance(val, basestring)
-
-
-    def find(self, probe):
-        filtered = self.row_hash_set
-        #logger.debug('initial len(filtered): %s', len(filtered))
-        for key, raw_val in probe.items():
-            if key not in self.indices:
-                self.index(key)
-            idx = self.indices[key]
-            if not Collection.is_iterable(raw_val):
-                filtered = filtered & idx[raw_val]
-            else:
-                candidates = reduce(operator.__or__, map(idx.get, raw_val), set())
-                filtered = filtered & candidates
-            #logger.debug('len(filtered): %s', len(filtered))
-        rows = map(self.row_hashes.get, filtered)
-        logger.debug('probe: %s\tlen(rows): %s', pprint.pformat(probe), len(rows))
-        return rows
-    
-    def distinct(self, key):
-        if key not in self.indices:
-            self.index(key)
-        return self.indices[key].keys()
-            
-    @classmethod
-    def iter_find(cls, probe, rows):
-        def filter_fn(row):
-            for k, v in probe.items():
-                if k not in row or row[k] not in Collection.smart_list(v):
-                    return False
-            return True
-        return filter(filter_fn, rows)
-
+LIMN_GROUP = 'gp'
 
 def make_limn_rows(rows, col_prim_key, count_key = 'count'):
     if not rows:
@@ -172,20 +72,7 @@ def write_default_graphs(source, limn_id, limn_name, basedir):
             limnpy.write_graph(limn_id + '_' + cohort_id, cohort_name + ' ' + limn_name, [source], source_cols, basedir=basedir)
 
 
-
-def write_project(proj, rows, basedir):
-    logger.debug('writing project datasource for: %s', proj)
-    limn_id = proj + '_all'
-    name = '%s Editors by Country' % proj.upper()
-
-    proj_rows = rows.find({'project' : proj})
-    logger.debug('len(proj_rows): %d', len(proj_rows))
-    limn_rows = make_limn_rows(proj_rows, 'country')
-    source = limnpy.DataSource(limn_id, name, limn_rows)
-    source.write(basedir=basedir)
-
-
-def write_project_mysql(proj, cursor, basedir):
+def write_project_mysql(proj, cursor, basedir, country_graphs=False):
     logger.debug('writing project datasource for: %s', proj)
     limn_id = proj + '_all'
     limn_name = '%s Editors by Country' % proj.upper()
@@ -203,33 +90,16 @@ def write_project_mysql(proj, cursor, basedir):
         logger.debug('GOT NUTHIN!: %s', query % proj)
         return
     limn_rows = make_limn_rows(proj_rows, 'country')
-    source = limnpy.DataSource(limn_id, limn_name, limn_rows)
+    source = limnpy.DataSource(limn_id, limn_name, limn_rows, limn_group=LIMN_GROUP)
     source.write(basedir=basedir)
     source.write_graph(basedir=basedir)
 
-
-def top_k_countries(rows, k, probe):
-    filtered_rows = Collection(rows.find(probe))
-    country_rows = merge_rows(['country'], filtered_rows)
-    country_totals = dict(map(itemgetter('country', 'count'), country_rows))
-    #logger.debug(sorted(map(list,map(reversed,country_totals.items())), reverse=True))
-    sorted_countries = zip(*sorted(map(list,map(reversed,country_totals.items())), reverse=True))
-    if sorted_countries:
-        keep_countries = sorted_countries[1][:min(k, len(country_totals))]
-    else:
-        keep_countries = []
-    return keep_countries
-
-
-def write_project_top_k(proj, rows, basedir, k=10):
-    limn_id = proj + '_top%d' % k
-    name = '%s Editors by Country (top %d)' % (proj.upper(), k)
-    top_k = top_k_countries(rows, k, {'project' : proj, 'cohort' : 'all'})
-    proj_rows = rows.find({'country' : top_k, 'project' : proj})
-    limn_rows = make_limn_rows(proj_rows, 'country')
-    source = limnpy.DataSource(limn_id, name, limn_rows)
-    source.write(basedir=basedir)
-    source.write_graph(basedir=basedir)
+    # construct single column graphs
+    if country_graphs:
+        for country in source.data.columns[1:]:
+            title = '%s Editors in %s' % (proj.upper(), country)
+            graph_id = '%s_%s' % (proj, re.sub('\W+', ' ', country).strip().replace(' ', '_').lower())
+            source.write_graph(metric_ids=[country], basedir=basedir, title=title, graph_id=graph_id)
 
 
 def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
@@ -273,20 +143,7 @@ def write_project_top_k_mysql(proj, cursor,  basedir, k=10):
 
     logger.debug('retrieved %d rows', len(proj_rows))
     limn_rows = make_limn_rows(proj_rows, 'country')
-    source = limnpy.DataSource(limn_id, limn_name, limn_rows)
-    source.write(basedir=basedir)
-    source.write_graph(basedir=basedir)
-
-
-def write_overall(projects, rows, basedir):
-    logger.info('writing overall datasource')
-    limn_id = 'overall'
-    limn_name = 'Overall Editors by Language'
-
-    overall_rows = rows.find({'world' : True})
-    limn_rows = make_limn_rows(overall_rows, 'project')
-    #logger.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
-    source = limnpy.DataSource(limn_id, name, limn_rows)
+    source = limnpy.DataSource(limn_id, limn_name, limn_rows, limn_group=LIMN_GROUP)
     source.write(basedir=basedir)
     source.write_graph(basedir=basedir)
 
@@ -303,14 +160,12 @@ def write_overall_mysql(projects, cursor, basedir):
     limn_rows = make_limn_rows(overall_rows, 'project')
     monthly_limn_rows = filter(lambda r: r['date'].day==1, limn_rows)
     #logger.debug('overall limn_rows: %s', pprint.pformat(limn_rows))
-    source = limnpy.DataSource(limn_id, limn_name, limn_rows)
+    source = limnpy.DataSource(limn_id, limn_name, limn_rows, limn_group=LIMN_GROUP)
     source.write(basedir=basedir)
     source.write_graph(basedir=basedir)
 
-    monthly_source = limnpy.DataSource(limn_id+'_monthly', limn_name+' Monthly', monthly_limn_rows)
+    monthly_source = limnpy.DataSource(limn_id+'_monthly', limn_name+' Monthly', monthly_limn_rows, limn_group=LIMN_GROUP)
     monthly_source.write(basedir=basedir)
-
-
 
 
 def merge_rows(group_keys, rows, merge_key='count', merge_red_fn=operator.__add__, red_init=0):
@@ -379,22 +234,30 @@ def write_group_mysql(group_key, country_data, cursor, basedir):
     limn_id = group_key.replace(' ', '_').lower()
     limn_name = group_key.title()
     logger.debug('limn_rows: %s', limn_rows)
-    source = limnpy.DataSource(limn_id, limn_name, limn_rows)
+    source = limnpy.DataSource(limn_id, limn_name, limn_rows, limn_group=LIMN_GROUP)
     source.write(basedir=basedir)
     source.write_graph(basedir=basedir)
 
+def get_countries(project, cursor):
+    query = """SELECT DISTINCT(country) FROM erosen_geocode_active_editors_country
+               WHERE project=%s"""
+    cursor.execute(query, (project,))
+    countries = [row['country'] for row in cursor.fetchall()]
+    return countries
 
-def write_group(group_key, rows, basedir):
-    group_rows = merge_rows([group_key, 'cohort', 'date'], rows)
-    if not group_rows:
-        logger.warning('group_rows for group_key: %s is empty! (group_rows: %s)', group_key, group_rows)
-    limn_rows = make_limn_rows(group_rows, group_key)
-    if limn_rows:
-        source = limnpy.DataSource(group_key.replace(' ', '_').lower(), group_key.replace('_', ' ').title(), limn_rows)
+def write_project_country_language(project, cursor, basedir):
+    for country in get_countries(project, cursor):
+        limn_id = '%s_%s' % (project, country.replace(' ', '_').replace('/', '-').lower())
+        limn_name = '%s Editors in %s' % (project.upper(), country.title())
+        query = """SELECT country, end, cohort, count FROM erosen_geocode_active_editors_country
+                   WHERE project=%s AND country=%s"""
+        cursor.execute(query, (project, country))
+        country_rows = cursor.fetchall()
+
+        limn_rows = make_limn_rows(country_rows, 'country')
+        source = limnpy.DataSource(limn_id, limn_name, limn_rows, limn_group=LIMN_GROUP)
         source.write(basedir=basedir)
         source.write_graph(basedir=basedir)
-    else:
-        logger.warning('limn_rows for group_key: %s is empty! (limn_rows: %s)', group_key, limn_rows)
 
 def parse_args():
 
@@ -446,6 +309,7 @@ def process_project_par((project, basedir)):
 
         write_project_mysql(project, cursor, args.basedir)
         write_project_top_k_mysql(project, cursor, args.basedir, k=args.k)
+        #write_project_country_language(project, cursor, args.basedir)
     except:
         logger.exception('caught exception in process:')
         raise    
@@ -454,7 +318,7 @@ def process_project(project, cursor, basedir):
     logger.info('processing project: %s (%d/%d)', project, i, len(projects))
     write_project_mysql(project, cursor, args.basedir)
     write_project_top_k_mysql(project, cursor, args.basedir, k=args.k)
-    
+    #write_project_country_language(project, cursor, args.basedir)
 
 if __name__ == '__main__':
     args = parse_args()
@@ -463,6 +327,9 @@ if __name__ == '__main__':
     # db = sql.connect('/home/erosen/src/editor-geocoding/geowiki.sqlite')
     # db.row_factory = sql.Row
     cursor = db.cursor()
+
+
+    write_project_mysql('en', cursor, args.basedir, country_graphs=True)
 
     # # use metadata from Google Drive doc which lets us group by country
     country_data = gcat.get_file(META_DATA_TITLE, sheet=META_DATA_SHEET, fmt='dict', usecache=False)

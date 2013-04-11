@@ -1,96 +1,73 @@
-import argparse
-import logging
-import pprint
-import datetime
+import pandas as pd
 import csv
-from operator import itemgetter
-import sys
+import limnpy
+import datetime
 
-from wikistats import process_metrics, core, ez, writers
-
-"""
-logging set up
-"""
-root_logger = logging.getLogger()
-ch = logging.StreamHandler()
-formatter = logging.Formatter('[%(levelname)s]\t[%(threadName)s]\t[%(funcName)s:%(lineno)d]\t%(message)s')
-ch.setFormatter(formatter)
-root_logger.addHandler(ch)
-root_logger.setLevel(logging.DEBUG)
-
-LEVELS = {'DEBUG': logging.DEBUG,
-          'INFO': logging.INFO,
-          'WARNING': logging.WARNING,
-          'ERROR': logging.ERROR,
-          'CRITICAL': logging.CRITICAL}
-    
-
-class LoadTSVAction(argparse.Action):
-    """
-    This action is fired upon parsing the --projfiles option which should be a list of 
-    tsv file names.  Each named file should have the wp project codes as the first column
-    The codes will be used to query the databse with the name <ID>wiki.
-
-    (Sorry about the nasty python functional syntax. will redo with moka shortly...)
-    """
-    def __call__(self, parser, namespace, values, option_string=None):
-        setattr(namespace, self.dest, list(set(
-                    map(
-                        itemgetter(0),
-                        map(
-                            str.split,
-                            filter(
-                                lambda line: line[0] != '#',
-                                reduce(
-                                    list.__add__, 
-                                    map(
-                                        file.readlines,
-                                        map(
-                                            open,
-                                            values)), [])))))))
+basedir = '/home/erosen/src/dashboard/historical/data'
 
 
-def parse_args():
-    parser = argparse.ArgumentParser('wikistats')
-    parser.add_argument('--projects',
-                        nargs='*',
-                        help='a space delimited list of project identifiers, like en, de, it, zh or pt')
-    parser.add_argument('--projfile',
-                        dest='projects',
-                        nargs='*',
-                        action=LoadTSVAction,
-                        help='a TSV file with project ids to process in the first column')
-    parser.add_argument('--outfile',
-                        default='wikistats_results.csv',
-                        help='an outfile path to which to write the output csv')
-    parser.add_argument('-l', '--loglevel',
-                        default='DEBUG',
-                        choices=LEVELS.keys(),
-                        help='logging level')
-    args = parser.parse_args()
+# stats_fn='/a/wikistats/csv/csv_wp/StatisticsMonthly.csv'
+stats_fn='/a/wikistats_git/dumps/csv/csv_wp/StatisticsMonthly.csv'
 
-    logging.getLogger().setLevel(LEVELS[args.loglevel])
+fieldnames = ['project',
+              'date',
+              'total_editors',
+              'new_editors',
+              'active_editors', 
+              'very_active_editors',
+              'num_articles',
+              'num_articles_200',
+              'new_articles_per_day', 
+              'mean_edits',
+              'mean_bytes', 
+              'larger_than_0.5kb', 
+              'larger_than_2kb',
+              'db_num_edits', 
+              'db_size', 
+              'db_num_words', 
+              'num_links_internal', 
+              'num_links_interwiki',
+              'num_links_image', 
+              'num_links_external',
+              'num_links_redirects'] + range(8)
 
-    if not hasattr(args, 'projects') or not args.projects:
-        parser.error('must specify the projects to analyze using the --projects option or the --projfile option')
-    logging.info('\n' + pprint.pformat(vars(args)))
-    return vars(args)
+val_keys = ['total_editors',
+              'new_editors',
+              'active_editors', 
+              'very_active_editors',
+              'num_articles',
+              'new_articles_per_day', 
+              'mean_edits',
+              'db_size',
+              'num_links_internal', 
+              'num_links_interwiki',
+              'num_links_image', 
+              'num_links_external',
+              'num_links_redirects']
+
+df_long = pd.read_table(stats_fn, sep=',', header=None, parse_dates=['date'], names=fieldnames)
+
+print df_long
+
+indic_lang_df = pd.read_table('../data/indic_lang_ids.tsv', sep='\t', comment='#', names=['id','name'])
+indic_langs = indic_lang_df['id'].dropna().unique()
+
+for val_key in val_keys:
+    print 'processing val_key: %s' % val_key
+    df = df_long.pivot(index='date', columns='project', values=val_key)
+    # print pt
+    limn_id = 'overall_%s' % val_key
+    limn_title = limn_id.replace('_', ' ').title()
+    ds = limnpy.DataSource(limn_id, limn_title,df)
+    ds.write(basedir)
 
 
-def main():
-    opts = parse_args()
-    timeseries_metrics = [
-        core.RecurringMetric(ez.NewEditors),
-        core.RecurringMetric(ez.ActiveEditors, min_edits=1),
-        core.RecurringMetric(ez.ActiveEditors, min_edits=5),
-        core.RecurringMetric(ez.ActiveEditors, min_edits=100),
-        core.RecurringMetric(ez.NewArticles),
-        # core.RecurringMetric(ez.NewArticles, rstart=datetime.datetime(2011,8,1)),
-        ]
-    wiki_metrics = [] + timeseries_metrics
-    summary_metrics.extend([tm.limn_writer() for tm in timeseries_metrics])
 
-    process_metrics(wiki_metrics, summary_metrics, opts)
-
-if __name__ == '__main__':
-    main()
+    indic_df = df[indic_langs]
+    indic_df['Total'] = indic_df.sum(axis=1)
+    indic_limn_id = 'indic_language_%s' % val_key
+    indic_limn_title = indic_limn_id.replace('_', ' ').title()
+    indic_ds = limnpy.DataSource(indic_limn_id, indic_limn_title, indic_df)
+    # print indic_pt
+    indic_ds.write(basedir)
+    indic_ds.write_graph(indic_langs, basedir=basedir)
