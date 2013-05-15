@@ -5,15 +5,17 @@ import datetime
 import gcat
 import pandas as pd
 from iso3166 import approx_countries as countries
+import os
 import json
+import numpy as np
 
 """
-    Map of grant spend (Exclude the FDC - WMF line)
-    Grant spend over time (stacked bar chart by grant type. We don't have months, so do it by Half year (column H "Timing"))
-    Grant spend by GS & GN over time (stacked bar - GS and GN - by half year) 
-    # of grants over time (stacked bar chart by grant type. We don't have months, so do it by Half year (column H "Timing"))
-    # grants by GS and GN over time 
-    # editors in GS/GN (sams as you have)
+X    Map of grant spend (Exclude the FDC - WMF line)
+X    Grant spend over time (stacked bar chart by grant type. We don't have months, so do it by Half year (column H "Timing"))
+X    Grant spend by GS & GN over time (stacked bar - GS and GN - by half year) 
+X    # of grants over time (stacked bar chart by grant type. We don't have months, so do it by Half year (column H "Timing"))
+X    # grants by GS and GN over time 
+X    # editors in GS/GN (sams as you have)
     GS Editors as a % of total editors: just track the % over time
 """
 
@@ -35,15 +37,129 @@ def plot_spending_by_country(df, country_df, basedir):
         #"name": "Canada"
     #},
     merged = pd.merge(df, country_df, left_on='Location', right_on='MaxMind Country')
-    plt_df = merged.groupby(['Location', 'ISO-3166 Alpha-3'])['Amount Funded'].sum().reset_index()
-    ds = []
-    for idx, row in plt_df.iterrows():
-        d = {}
-        d['id'] = row['ISO-3166 Alpha-3']
-        d['name'] = row['Location']
-        d['amount_funded'] = row['Amount Funded']
-        ds.append(d)
-    print json.dumps(ds, indent=4)
+    geo_df = merged.groupby(['Location', 'ISO-3166 Alpha-3'])['Amount Funded'].sum().reset_index()
+    geo_df = geo_df.rename(columns={'Location' : 'name', 'ISO-3166 Alpha-3' : 'id', 'Amount Funded' : 'amount_funded'})
+
+    geo_id = 'grants_spending_by_country'
+    geo_name = "Grants Spending by Country",
+
+    # write json format datafile
+    geo_data = [r[1].to_dict() for r in geo_df.iterrows()]
+    geo_df_file = open(os.path.join(basedir, 'datafiles', '%s.json' % geo_id), 'w')
+    json.dump(geo_data, geo_df_file, indent=4)
+
+    # write datasource
+    ds = {
+        "id": geo_id,
+        "slug": geo_id,
+        "format": "json",
+        "type": "mobile_device_by_geo",
+        "url": "/data/datafiles/gp/grants_spending_by_country.json",
+        "name": geo_name, 
+        "shortName": "",
+        "desc": "",
+        "notes": "",
+        "columns": [
+            {
+                "id": "id",
+                "label": "ID",
+                "type": "string",
+                #"index": 0
+            },
+            {
+                "id": "name",
+                "label": "Name",
+                "type": "string",
+                #"index": 1
+            },
+            {
+                "id": "amount_funded",
+                "label": "Amount Funded",
+                "type": "int",
+                #"index": 2
+            },
+        ]
+    } 
+    geo_ds_file = open(os.path.join(basedir, 'datasources', '%s.json' % geo_id), 'w')
+    json.dump(ds, geo_ds_file, indent=4)
+
+    graph ={
+        "graph_version": "0.6.0",
+        "id": geo_id,
+        "slug": geo_id,
+        "name": geo_name,
+        "shortName": "",
+        "desc": "",
+        "notes": "",
+        "root": {
+            "nodeType": "canvas",
+            "disabled": False,
+            "children": [
+                {
+                    "nodeType": "geo-map",
+                    "disabled": False,
+                    "metric": {
+                        "source_id": "map-world_countries",
+                        "type": "int"
+                    },
+                    "options": {
+                        "projection": "mercator",
+                        "featuresColor": "#EEEEEE",
+                        "backgroundColor": "white"
+                    },
+                    "children": [
+                        {
+                            "nodeType": "geo-feature",
+                            "disabled": False,
+                            "metric": {
+                                "source_id": geo_id, 
+                                "source_col": "amount_funded",
+                                "type": "int"
+                            },
+                            "options": {
+                                "label": "Amount Funded",
+                                "scale": "log",
+                                "valueFormat": ",.2s",
+                                "fill": [
+                                    "#D4E7ED",
+                                    "#0A3A4B"
+                                ]
+                            },
+                            "stroke": {
+                                "width": 3,
+                                "color": "#FFFFFF",
+                                "opacity": [
+                                    0,
+                                    1
+                                ]
+                            }
+                        },
+                        {
+                            "nodeType": "zoom-pan",
+                            "disabled": False,
+                            "options": {
+                                "min": 1,
+                                "max": 10
+                            }
+                        },
+                        {
+                            "nodeType": "infobox",
+                            "disabled": False
+                        }
+                    ]
+                }
+            ],
+            "width": "auto",
+            "minWidth": 750,
+            "height": 750,
+            "minHeight": 500,
+            "xPadding": 0,
+            "yPadding": 0.1
+        }
+    }
+    geo_graph_file = open(os.path.join(basedir, 'graphs', '%s.json' % geo_id), 'w')
+    json.dump(graph, geo_graph_file, indent=4)
+ 
 
 def plot_spending_over_time(df, basedir):
     #plot_df = df.groupby('Timing').sum()[['Amount Funded']]
@@ -52,17 +168,13 @@ def plot_spending_over_time(df, basedir):
             cols='Grant Type', 
             values='Amount Funded', 
             aggfunc=sum)
-    print plot_df
-
-    ds = limnpy.DataSource(limn_id='grants_spending_over_time',
-            limn_name='Spending Over Time',
+    ds = limnpy.DataSource(limn_id='grants_spending_by_program',
+            limn_name='Spending by Program',
+            limn_group='gp',
             data=plot_df)
     ds.write(basedir)
-    g = ds.write_graph(basedir=basedir)
-    #metric_group_node = g.graph['root']['children'][limnpy.Graph.METRIC_CHILD_ID]
-    #metric_group_node['nodeType'] = 'bar-group'
-    #for child_node in metric_group_node['children']:
-        #child_node['nodeType'] = 'bar'
+    g = ds.get_graph()
+    make_bar_graph(g)
     g.write(basedir)
 
 def plot_spending_by_global_south(df, country_df, basedir):
@@ -75,16 +187,76 @@ def plot_spending_by_global_south(df, country_df, basedir):
 
     ds = limnpy.DataSource(limn_id='grants_spending_by_global_south',
             limn_name='Spending by Global South',
+            limn_group='gp',
             data=plot_df)
     ds.write(basedir)
-    ds.write_graph(basedir=basedir)
-    print merged
+    g = ds.get_graph()
+    make_bar_graph(g)
+    g.write(basedir)
 
 def plot_grants_over_time(df, basedir):
-    pass
+    #plot_df = df.groupby('Timing').sum()[['Amount Funded']]
+    plot_df = pd.DataFrame.pivot_table(df,
+            rows='Timing',
+            cols='Grant Type',
+            values='Amount Funded',
+            aggfunc=np.size)
+    print plot_df
 
-def plot_grants_by_global_south(df, basedir):
-    pass
+    ds = limnpy.DataSource(limn_id='grants_count_by_program',
+            limn_name='Number of Grants by Program',
+            limn_group='gp',
+            data=plot_df)
+    ds.write(basedir)
+    g = ds.get_graph()
+    make_bar_graph(g)
+    g.write(basedir)
+
+def plot_grants_by_global_south(df, country_df, basedir):
+    merged = pd.merge(df, country_df, left_on='Location', right_on='MaxMind Country')
+    plot_df = pd.DataFrame.pivot_table(merged,
+            rows='Timing',
+            cols='Global South/North',
+            values='Amount Funded',
+            aggfunc=len)
+
+    ds = limnpy.DataSource(limn_id='grants_count_by_global_south',
+            limn_name='Number of Grants by Global South',
+            limn_group='gp',
+            data=plot_df)
+    ds.write(basedir)
+    g = ds.get_graph()
+    make_bar_graph(g)
+    g.write(basedir)
+
+def make_bar_graph(g):
+    metric_group_node = g.graph['root']['children'][limnpy.Graph.METRIC_CHILD_ID]
+    metric_group_node['nodeType'] = 'bar-group'
+    for child_node in metric_group_node['children']:
+        child_node['nodeType'] = 'bar'
+
+def make_map_graph(g):
+    graph_nodes = g.graph['root']['children']
+    g.graph['root']['children'] = graph_nodes[limnpy.Graph.METRIC_CHILD_ID:]
+    geo_node = g.graph['root']['children'][0]
+    geo_node['nodeType'] = 'geo-map'
+    for child_node in geo_node['children']:
+        child_node['nodeType'] = 'geo-feature'
+
+    zoom_pan_node = {
+        "nodeType": "zoom-pan",
+        "disabled": False,
+        "options": {
+            "min": 1,
+            "max": 10
+        }
+    }
+    infobox_node = {
+        "nodeType": "infobox",
+        "disabled": False
+    } 
+    geo_node['children'].append(zoom_pan_node)
+    geo_node['children'].append(infobox_node)
 
 def clean_location(c_str):
     if c_str == 'N/A':
@@ -118,14 +290,13 @@ def get_country_data():
 def main():
     basedir = 'data'
     df = get_grant_data()
-    print df
     country_df = get_country_data()
-    print country_df
     plot_spending_by_country(df, country_df, basedir)
     plot_spending_over_time(df, basedir)
     plot_spending_by_global_south(df, country_df, basedir)
     plot_grants_over_time(df, basedir)
-    plot_grants_by_global_south(df, basedir)
+    plot_grants_by_global_south(df, country_df, basedir)
+
 
 if __name__ == '__main__':
     main()

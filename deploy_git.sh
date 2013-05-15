@@ -7,9 +7,9 @@ cd /home/erosen/src/dashboard/
 
 for source in "geowiki" "grants" "mobile" "historical" "db_size"
 do
-    for type in "dashboards" "datasources" "datafiles" "graphs"
+    for type in "dashboards" "datasources" "datafiles" "graphs" "geo"
     do
-	cp $source/data/$type/* ../dashboard-data/$type
+	cp -r $source/data/$type/* ../dashboard-data/$type
     done
 done
 
