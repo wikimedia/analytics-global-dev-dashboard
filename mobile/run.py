@@ -22,12 +22,26 @@ import math
 import pprint
 import re
 import pandas as pd
-import re
+import time
 import unidecode
 import copy
 
 import gcat
 import limnpy
+
+#DEFAULT_PROVIDERS = ['digi-telecommunications-malaysia',
+                     #'grameenphone-bangladesh',
+                     #'orange-kenya',
+                     #'orange-sahelc-niger',
+                     #'orange-tunisia',
+                     #'orange-uganda',
+                     #'orange-cameroon',
+                     #'orange-ivory-coast',
+                     #'promonte-gsm-montenegro',
+                     #'tata-india',
+                     #'stc/al-jawal-saudi-arabia',
+                     #'total-access-(dtac)-thailand']
+                     ##'tim-brasil']
 
 DEFAULT_PROVIDERS = ['digi-telecommunications-malaysia',
                      'grameenphone-bangladesh',
@@ -38,10 +52,8 @@ DEFAULT_PROVIDERS = ['digi-telecommunications-malaysia',
                      'orange-cameroon',
                      'orange-ivory-coast',
                      'promonte-gsm-montenegro',
-                     'tata-india',
                      'stc/al-jawal-saudi-arabia',
                      'total-access-(dtac)-thailand']
-                     #'tim-brasil']
 
 PROVIDER_COUNTRY_CODES = {'digi-telecommunications-malaysia' : 'MY',
              'grameenphone-bangladesh' : 'BD',
@@ -71,6 +83,7 @@ COUNTRY_NAMES = {'MY' : 'Malaysia',
                  'SA' : 'Saudi Arabia',
                  'TH' : 'Thailand'}
 
+LIMN_GROUP = 'gp'
 
 LEVELS = {'DEBUG': logging.DEBUG,
           'INFO': logging.INFO,
@@ -130,18 +143,26 @@ def load_counts(cache_dir):
 
     num_cached = len(os.listdir(cache_dir))
     logger.info('loading %d cached files from %s', num_cached, cache_dir)
-    if os.path.exists(cache_dir):
-        for i, count_file in enumerate(sorted(os.listdir(cache_dir))):
-            #logger.debug('proecessing: %s', count_file)
+
+    i = 0
+    for root, dirs, files in os.walk(cache_dir):
+        for count_file in files:
+            full_path = os.path.join(cache_dir, root, count_file)
+            logger.debug('proecessing: %s', full_path)
             try:
-                df = pd.read_table(
-                        os.path.join(cache_dir, count_file),
+                #df = pd.read_table(
+                df = pd.read_csv(
+                        os.path.join(root, full_path),
                         parse_dates=[date_col_ind],
                         date_parser=lambda s : datetime.datetime.strptime(s,
                             '%Y-%m-%d_%H'),
+                            #'%Y-%m-%d'),
+                        skiprows=1,
+                        sep='\t',
                         names=COUNT_FIELDS)
-                #logging.debug('loaded %d lines from %s (%d / %d)', len(df), count_file, i, num_cached)
+                logging.debug('loaded %d lines from %s (%d / %d)', len(df), full_path, i, num_cached)
                 counts = counts.append(df)
+                i += 1
             except StopIteration: # this is what happens when Pandas tries to load an empty file
                 pass
             except:
@@ -149,11 +170,12 @@ def load_counts(cache_dir):
 
     # scale to compensate for filtering
     counts = counts[counts['project'] == 'wikipedia.org']
+    #counts.date = counts.date.apply(lambda d : d.date())
     #counts = counts.pivot('date', [pivot_col, 'site'], 'count')
-    #counts.set_index('date').resample(rule='D', how='sum', label='right')
-    ##counts = counts.groupby(FIELDS).count.sum().reset_index()
-    ##.set_index('date').resample(rule='D', how='sum', label='right').reset_index()
-    #logger.debug('counts after:%s\n%s', counts, counts[:10])
+    #counts = counts.set_index('date').resample(rule='D', how='sum', label='right').reset_index()
+    #counts = counts.groupby(FIELDS).count.sum().reset_index()
+    logger.debug('loaded_counts:%s\n%s', counts, counts[:10])
+    logger.debug('dates: %s', counts.date.unique())
     return counts
 
 
@@ -165,6 +187,7 @@ def get_provider_metadata(usecache=False):
             meta = gcat.get_file('WP Zero Partner - Versions', fmt='pandas', usecache=usecache)
         except HttpError:
             logger.warning('failed to connect to google drive server, trying again ...')
+            time.sleep(1)
             meta = None
     meta = meta.set_index(meta['Partner Identifier'])
     return meta
@@ -178,17 +201,19 @@ def make_country_sources(counts, basedir):
     daily_country_counts_limn = daily_country_counts_limn.rename(columns=COUNTRY_NAMES)
     daily_country_counts_limn_full = copy.deepcopy(daily_country_counts_limn)
     daily_country_counts_limn = daily_country_counts_limn#[:-1]
-    daily_country_source = limnpy.DataSource('daily_mobile_wp_views_by_country',
-                                             'Daily Mobile WP Views By Country',
-                                             daily_country_counts_limn)
+    daily_country_source = limnpy.DataSource(limn_id='daily_mobile_wp_views_by_country',
+                                             limn_name='Daily Mobile WP Views By Country',
+                                             data=daily_country_counts_limn,
+                                             limn_group=LIMN_GROUP)
     daily_country_source.write(basedir)
     #logger.debug('daily_country_source: %s', daily_country_source)
 
     monthly_country_counts = daily_country_counts_limn_full.resample(rule='M', how='sum', label='right')
     monthly_country_counts = monthly_country_counts#[:-1]
-    monthly_country_source = limnpy.DataSource('monthly_mobile_wp_views_by_country',
-                                               'Monthly Mobile WP Views By Country',
-                                               monthly_country_counts)
+    monthly_country_source = limnpy.DataSource(limn_id='monthly_mobile_wp_views_by_country',
+                                               limn_name='Monthly Mobile WP Views By Country',
+                                               data=monthly_country_counts,
+                                               limn_group=LIMN_GROUP)
     monthly_country_source.write(basedir)
     return daily_country_source, monthly_country_source
     
@@ -204,8 +229,8 @@ def make_zero_sources(counts, provider, provider_metadata, basedir):
     if not start_date or (isinstance(start_date, float) and math.isnan(start_date)):
         # this means that the provider isn't yet live
         if len(prov_counts['date']):
-            logger.debug('prov_counts.date: %s', prov_counts.date)
-            start_date = prov_counts['date'].min()
+            logger.debug('prov_counts.date.min(): %s', prov_counts.date.min())
+            start_date = prov_counts.date.min()
         else:
             logger.warning('provider counts for provider %s is empty', provider)
     prov_counts = prov_counts[prov_counts['date'] > start_date]
@@ -219,17 +244,20 @@ def make_zero_sources(counts, provider, provider_metadata, basedir):
     daily_version_limn = daily_version.pivot('date', 'site', 'count')
     daily_version_limn = daily_version_limn.rename(columns=VERSIONS)
     daily_version_limn_full = copy.deepcopy(daily_version_limn)
-    daily_version_limn = daily_version_limn.resample(rule='M', how='sum', label='right')#[:-1]
+    daily_version_limn = daily_version_limn.resample(rule='D', how='sum', label='right')#[:-1]
     daily_limn_name = '%s Daily Wikipedia Page Requests By Version' % title(provider)
-    daily_version_source = limnpy.DataSource(slugify(daily_limn_name),
-            daily_limn_name, daily_version_limn)
+    daily_version_source = limnpy.DataSource(limn_id=slugify(daily_limn_name),
+                                             limn_name=daily_limn_name, 
+                                             data=daily_version_limn,
+                                             limn_group=LIMN_GROUP)
     daily_version_source.write(basedir)
 
     monthly_version = daily_version_limn_full.resample(rule='M', how='sum', label='right')
     monthly_version = monthly_version#[:-1]
-    monthly_version_source = limnpy.DataSource('%s_monthly_wp_views_by_version' % slugify(provider),
-                                               '%s Monthly WP View By Version' % title(provider),
-                                               monthly_version.reset_index())
+    monthly_version_source = limnpy.DataSource(limn_id='%s_monthly_wp_views_by_version' % slugify(provider),
+                                               limn_name='%s Monthly WP View By Version' % title(provider),
+                                               data=monthly_version.reset_index(),
+                                               limn_group=LIMN_GROUP)
     monthly_version_source.write(basedir)
     logger.debug('daily_version_source.data.columns: %s', list(daily_version_source.data.columns))
     return daily_version_source, monthly_version_source
@@ -263,18 +291,27 @@ def make_percent_sources(provider,
     daily_percent_df = daily_percent_df.reset_index()
     daily_percent_df = daily_percent_df.rename(columns={'index' : 'date', 0 : 'Country Percentage Share'})
     daily_limn_name = '%s Daily Wikipedia Page Requests as Percentage Share of %s' % (title(provider), country)
-    daily_percent_source = limnpy.DataSource(slugify(daily_limn_name),
-            daily_limn_name, daily_percent_df)
+    daily_percent_source = limnpy.DataSource(limn_id=slugify(daily_limn_name),
+                                             limn_name=daily_limn_name,
+                                             data=daily_percent_df,
+                                             limn_group=LIMN_GROUP)
     daily_percent_source.write(basedir)
 
     # can't just aggregate daily percents--math doesn't work like that
     monthly_percent_df = monthly_version_source.data[available_versions].sum(axis=1)
+    try:
+        monthly_country_series = monthly_country_source.data[country]
+    except KeyError:
+        raise ValueError('Country name: %s not found in countries datasource' % country)
+    monthly_percent_df = pd.DataFrame(monthly_percent_df / monthly_country_series)
     monthly_percent_df = monthly_percent_df * 100
     monthly_percent_df = monthly_percent_df.reset_index()
     monthly_percent_df = monthly_percent_df.rename(columns={'index' : 'date', 0 : 'Country Percentage Share'})
     monthly_limn_name = '%s Monthly Wikipedia Page Requests as Percentage Share of %s' % (title(provider), country)
-    monthly_percent_source = limnpy.DataSource(slugify(monthly_limn_name),
-            monthly_limn_name, monthly_percent_df)
+    monthly_percent_source = limnpy.DataSource(limn_id=slugify(monthly_limn_name),
+                                               limn_name=monthly_limn_name,
+                                               data=monthly_percent_df,
+                                               limn_group=LIMN_GROUP)
     monthly_percent_source.write(basedir)
     return daily_percent_source, monthly_percent_source
 
@@ -315,7 +352,10 @@ def make_summary_graph(datasources, provider_metadata, basedir):
     final_full = copy.deepcopy(final)
     final = final#[:-1]
     # logger.debug('final: %s', final)
-    total_ds = limnpy.DataSource('free_mobile_traffic_by_version', 'Free Mobile Traffic by Version', final)
+    total_ds = limnpy.DataSource(limn_id='free_mobile_traffic_by_version',
+                                 limn_name='Free Mobile Traffic by Version',
+                                 data=final,
+                                 limn_group=LIMN_GROUP)
     total_ds.write(basedir)
     total_graph = total_ds.get_graph()
 
@@ -336,7 +376,10 @@ def make_summary_graph(datasources, provider_metadata, basedir):
 
     final_monthly = final_full.resample(rule='M', how='sum', label='right')
     final_monthly = final_monthly#[:-1]
-    total_ds_monthly = limnpy.DataSource('free_mobile_traffic_by_version_monthly', 'Monthly Free Mobile Traffic by Version', final_monthly)
+    total_ds_monthly = limnpy.DataSource(limn_id='free_mobile_traffic_by_version_monthly',
+                                         limn_name='Monthly Free Mobile Traffic by Version',
+                                         data=final_monthly,
+                                         limn_group=LIMN_GROUP)
     total_ds_monthly.write(basedir)
     total_graph_monthly = total_ds_monthly.get_graph()
     total_graph_monthly.graph['desc'] = total_graph.graph['desc']
@@ -376,7 +419,7 @@ def add_raw_tab(provider,
     country = COUNTRY_NAMES[cc]
 
     # daily
-    daily_limn_name = '%s and Total %s Monthly Wikipedia Page Requests' % (title(provider), country)
+    daily_limn_name = '%s and Total %s Wikipedia Page Requests' % (title(provider), country)
     daily_raw_graph = limnpy.Graph(slugify(daily_limn_name), daily_limn_name)
     daily_raw_graph.add_metric(daily_country_source, country)
     daily_raw_graph.add_metric(daily_version_source, 'M')
@@ -443,14 +486,14 @@ def make_dashboard(carrier_counts,
     name = '%s Wikipedia Zero Dashboard' % title(provider)
     db = limnpy.Dashboard(slugify(provider, '-'), name, headline=title(provider), subhead='Wikipedia Zero Dashboard')
 
-    # make provider-specific sources
+    # make provider-specific sourcess
     daily_version_source, monthly_version_source = make_zero_sources(
             carrier_counts, provider, provider_metadata, basedir)
     daily_percent_source, monthly_percent_source = make_percent_sources(
             provider, daily_country_source, monthly_country_source,
             daily_version_source, monthly_version_source, basedir)
 
-    # make graphs and add to dashboard
+    # make graphs and add tabs to dashboard
     add_version_tab(provider, daily_version_source, monthly_version_source, db,
             basedir)
     add_raw_tab(provider, daily_version_source, monthly_version_source,
@@ -473,7 +516,7 @@ def parse_args():
                         help='log level')
     parser.add_argument('--zero_counts',
                         default='/a/erosen/zero_carrier_country/carrier',
-                        help='file in which to save historical counts of zero \
+                        help='file in which to find counts of zero \
                         filtered request.  each run just appends to this file.')
     parser.add_argument('--country_counts',
                         default='/a/erosen/zero_carrier_country/country',
@@ -500,8 +543,7 @@ def parse_args():
 
 def main():
     opts = parse_args()
-    # load data
-    provider_metadata = get_provider_metadata(usecache=False)
+    provider_metadata = get_provider_metadata(usecache=True)
     zero_counts = load_counts(opts['zero_counts'])
     country_counts = load_counts(opts['country_counts'])
 
