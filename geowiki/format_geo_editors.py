@@ -1,3 +1,5 @@
+#! /usr/bin/python
+
 import argparse
 import logging
 import json, pprint
@@ -26,7 +28,7 @@ root_logger.setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Parameters for interacting with Google Drive doc which holds Global South categories etc.
-META_DATA_TITLE    = 'Global South and Region Classifications'
+META_DATA_TITLE    = 'Global South and Region Classifications.bak'
 META_DATA_SHEET    = 'data'
 META_DATA_COUNTRY_FIELD = 'MaxMind Country'
 META_DATA_REGION_FIELD = 'Region'
@@ -336,8 +338,8 @@ if __name__ == '__main__':
     # logger.debug('typ(country_data): %s', type(country_data))
     # logger.info('country_data[0].keys: %s', country_data[0].keys())
 
-    write_group_mysql(META_DATA_REGION_FIELD, country_data, cursor, args.basedir)
     write_group_mysql(META_DATA_GLOBAL_SOUTH_FIELD, country_data, cursor, args.basedir)
+    write_group_mysql(META_DATA_REGION_FIELD, country_data, cursor, args.basedir)
 
     write_group_mysql(META_DATA_COUNTRY_FIELD, country_data, cursor, args.basedir)
 
