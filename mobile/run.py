@@ -44,7 +44,9 @@ DEFAULT_CARRIER_IDS = ['digi-telecommunications-malaysia',
                      'promonte-gsm-montenegro',
                      'stc-al-jawal-saudi-arabia',
                      'tata-india',
-                     'total-access-dtac-thailand']
+                     'total-access-dtac-thailand',
+                     'cct-congo-dem-rep',
+                     'mobilink-pakistan']
 
 LIMN_GROUP = 'gp'
 
@@ -70,7 +72,7 @@ COUNT_FIELDS = FIELDS + ['count']
 
 class Carrier(object):
 
-    carrier_info = mccmnc.mccmnc(usecache=True)
+    carrier_info = mccmnc.mccmnc(usecache=False)
     carrier_info.append({
         "network": "Tata", 
         "country": "India", 
@@ -78,11 +80,12 @@ class Carrier(object):
         "iso": "AF", 
         "country_code": "IN", 
         "mcc_mnc": "405-*", 
-        "mnc": "*", 
+        "mnc": "*",
+        "name" : "Tata India",
         "slug": "tata-india"
     })
     carrier_version_info = gcat.get_file('WP Zero Partner - Versions', 
-            fmt='pandas', usecache=False).set_index('Slug')
+            fmt='pandas', usecache=True).set_index('Slug')
 
     def __init__(self, slug):
         filtered = filter(lambda r : r['slug'] == slug, self.carrier_info)
@@ -131,7 +134,7 @@ def make_extended_legend(versions, carrier):
     final = carrier_replace(final)
     return final
 
-def load_counts(cache_dir):
+def load_counts(cache_dir, sep, date_fmt):
     counts = pd.DataFrame(columns=COUNT_FIELDS)
     date_col_ind = COUNT_FIELDS.index('date')
 
@@ -145,34 +148,45 @@ def load_counts(cache_dir):
                         full_path,
                         parse_dates=[date_col_ind],
                         date_parser=lambda s : datetime.datetime.strptime(s,
-                             DATE_FMT),
+                             date_fmt),
                         skiprows=1,
+                        sep=sep,
                         names=COUNT_FIELDS)
-                logging.debug('loaded %d lines from file %d: %s', len(df), i, full_path)
+                logger.debug('processing: %s', full_path)
+                logger.debug('loaded %d lines from file %d: %s', len(df), i, full_path)
                 counts = counts.append(df)
                 i += 1
             except StopIteration: # this is what happens when Pandas tries to load an empty file
-                pass
+                logger.debug('skipping empty file: %s', full_path)
             except:
                 logger.exception('exception caught while loading cache file: %s', count_file)
 
-    counts = counts[counts['project'] == 'wikipedia.org']
+    counts = counts[counts['project'].isin(['wikipedia.org', 'wikipedia'])]
     logger.debug('loaded_counts:%s\n%s', counts, counts[:10])
     return counts
 
 
 def clean_carrier_counts(carrier_counts):
     replace_dict = {
-            '405-0%2' : 'tata-india',
+            '405-0%2A' : 'tata-india',
             '405-0*'  : 'tata-india',
             'cct-congo,-dem-rep' : 'cct-congo-dem-rep',
-            'stc/al-jawal-saudi-arabia' : 'stc/al-jawal-saudi-arabia',
-            'total-access-(dtac)-thailand' : 'total-access-dtac-thailand'}
+            'stc/al-jawal-saudi-arabia' : 'stc-al-jawal-saudi-arabia',
+            'total-access-(dtac)-thailand' : 'total-access-dtac-thailand',
+            'digi-malaysia' : 'digi-telecommunications-malaysia',
+            'orange-niger' : 'orange-sahelc-niger',
+            'orange-tunesia' : 'orange-tunisia',
+            'saudi-telecom' :  'stc-al-jawal-saudi-arabia',
+            'dtac-thailand' : 'total-access-dtac-thailand'
+            }
     carrier_counts.carrier = carrier_counts.carrier.replace(replace_dict)
     return carrier_counts
 
 
-def make_country_sources(counts, basedir):
+def make_country_sources(counts, basedir, prefix):
+    if not len(counts):
+        logger.warning('country counts is empty, returning None')
+        return None, None
     country_counts = counts.groupby(['country', 'date'], as_index=False).sum()
     country_counts_limn = country_counts.pivot('date', 'country', 'count')
     daily_country_counts_limn = country_counts_limn.resample('D', how='sum', label='right')
@@ -180,7 +194,7 @@ def make_country_sources(counts, basedir):
     #daily_country_counts_limn = daily_country_counts_limn.rename(columns=COUNTRY_NAMES)
     daily_country_counts_limn_full = copy.deepcopy(daily_country_counts_limn)
     daily_country_counts_limn = daily_country_counts_limn#[:-1]
-    daily_country_source = limnpy.DataSource(limn_id='daily_mobile_wp_views_by_country',
+    daily_country_source = limnpy.DataSource(limn_id=prefix + 'daily_mobile_wp_views_by_country',
                                              limn_name='Daily Mobile WP Views By Country',
                                              data=daily_country_counts_limn,
                                              limn_group=LIMN_GROUP)
@@ -189,7 +203,7 @@ def make_country_sources(counts, basedir):
 
     monthly_country_counts = daily_country_counts_limn_full.resample(rule='M', how='sum', label='right')
     monthly_country_counts = monthly_country_counts#[:-1]
-    monthly_country_source = limnpy.DataSource(limn_id='monthly_mobile_wp_views_by_country',
+    monthly_country_source = limnpy.DataSource(limn_id=prefix + 'monthly_mobile_wp_views_by_country',
                                                limn_name='Monthly Mobile WP Views By Country',
                                                data=monthly_country_counts,
                                                limn_group=LIMN_GROUP)
@@ -197,7 +211,7 @@ def make_country_sources(counts, basedir):
     return daily_country_source, monthly_country_source
 
 
-def make_version_sources(counts, carrier, basedir):
+def make_version_sources(counts, carrier, basedir, prefix):
     # logger.debug('counts:\n%s', counts)
     # logger.debug('counts.columns: %s', counts.columns)
 
@@ -213,8 +227,8 @@ def make_version_sources(counts, carrier, basedir):
     prov_counts = prov_counts[prov_counts['date'] > start_date]
     
     if len(prov_counts) == 0:
-        logger.warning('skipping carrier: %s--graphs will not be available on dashbaord', carrier)
-        raise ValueError('carrier %s is not present in carrier counts' % carrier)
+        logger.warning('skipping carrier: %s--graphs will not be available on dashbaord', carrier.name)
+        raise ValueError('carrier %s is not present in carrier counts' % carrier.name)
 
     # munge counts into right format
     daily_version = prov_counts.groupby(['date', 'site'], as_index=False).sum()
@@ -223,7 +237,7 @@ def make_version_sources(counts, carrier, basedir):
     daily_version_limn_full = copy.deepcopy(daily_version_limn)
     daily_version_limn = daily_version_limn.resample(rule='D', how='sum', label='right')#[:-1]
     daily_limn_name = '%s Daily Wikipedia Page Requests By Version' % carrier.name
-    daily_version_source = limnpy.DataSource(limn_id=slugify(daily_limn_name),
+    daily_version_source = limnpy.DataSource(limn_id=slugify(prefix + daily_limn_name),
                                              limn_name=daily_limn_name, 
                                              data=daily_version_limn,
                                              limn_group=LIMN_GROUP)
@@ -232,7 +246,7 @@ def make_version_sources(counts, carrier, basedir):
     monthly_version = daily_version_limn_full.resample(rule='M', how='sum', label='right')
     monthly_version = monthly_version#[:-1]
     monthly_limn_name = '%s Monthly WP View By Version' % carrier.name
-    monthly_version_source = limnpy.DataSource(limn_id=slugify(monthly_limn_name),
+    monthly_version_source = limnpy.DataSource(limn_id=slugify(prefix + monthly_limn_name),
                                                limn_name=monthly_limn_name,
                                                data=monthly_version.reset_index(),
                                                limn_group=LIMN_GROUP)
@@ -247,7 +261,8 @@ def make_percent_sources(carrier,
                           monthly_country_source, 
                           daily_version_source, 
                           monthly_version_source,
-                          basedir):
+                          basedir,
+                          prefix):
 
     available_versions = list(set([VERSIONS['M'], VERSIONS['Z']]) & set(daily_version_source.data.columns))
     #logger.debug('available_versions: %s', available_versions)
@@ -266,7 +281,7 @@ def make_percent_sources(carrier,
     daily_percent_df = daily_percent_df.reset_index()
     daily_percent_df = daily_percent_df.rename(columns={'index' : 'date', 0 : 'Country Percentage Share'})
     daily_limn_name = '%s Daily Wikipedia Page Requests as Percentage Share of %s' % (carrier.name, carrier.country)
-    daily_percent_source = limnpy.DataSource(limn_id=slugify(daily_limn_name),
+    daily_percent_source = limnpy.DataSource(limn_id=slugify(prefix + daily_limn_name),
                                              limn_name=daily_limn_name,
                                              data=daily_percent_df,
                                              limn_group=LIMN_GROUP)
@@ -283,7 +298,7 @@ def make_percent_sources(carrier,
     monthly_percent_df = monthly_percent_df.reset_index()
     monthly_percent_df = monthly_percent_df.rename(columns={'index' : 'date', 0 : 'Country Percentage Share'})
     monthly_limn_name = '%s Monthly Wikipedia Page Requests as Percentage Share of %s' % (carrier.name, carrier.country)
-    monthly_percent_source = limnpy.DataSource(limn_id=slugify(monthly_limn_name),
+    monthly_percent_source = limnpy.DataSource(limn_id=slugify(prefix + monthly_limn_name),
                                                limn_name=monthly_limn_name,
                                                data=monthly_percent_df,
                                                limn_group=LIMN_GROUP)
@@ -291,18 +306,18 @@ def make_percent_sources(carrier,
     return daily_percent_source, monthly_percent_source
 
 
-def make_summary_percent_graph(datasources, basedir):
+def make_summary_percent_graph(datasources, basedir, prefix):
     """no launch date checking because this is for internal use only"""
     logger.debug('making percent summary!')
     limn_name = 'Free Mobile Page Requests as Percent of Country'
-    g = limnpy.Graph(slugify(limn_name), limn_name, []) 
+    g = limnpy.Graph(slugify(prefix + limn_name), limn_name, []) 
     for prov, ds in datasources.items():
         g.add_metric(ds, 'Country Percentage Share', label=prov.name)
     g.graph['root']['yDomain'] = (0,50)
     g.write(basedir, set_colors=False)
 
 
-def make_summary_version_graph(datasources, basedir):
+def make_summary_version_graph(datasources, basedir, prefix):
     dfs = []
     for carrier, datasource in datasources.items():
         start_date = carrier.start_date
@@ -327,7 +342,7 @@ def make_summary_version_graph(datasources, basedir):
     final_full = copy.deepcopy(final)
     final = final#[:-1]
     # logger.debug('final: %s', final)
-    total_ds = limnpy.DataSource(limn_id='free_mobile_traffic_by_version',
+    total_ds = limnpy.DataSource(limn_id=prefix + 'free_mobile_traffic_by_version',
                                  limn_name='Free Mobile Traffic by Version',
                                  data=final,
                                  limn_group=LIMN_GROUP)
@@ -351,7 +366,7 @@ def make_summary_version_graph(datasources, basedir):
 
     final_monthly = final_full.resample(rule='M', how='sum', label='right')
     final_monthly = final_monthly#[:-1]
-    total_ds_monthly = limnpy.DataSource(limn_id='free_mobile_traffic_by_version_monthly',
+    total_ds_monthly = limnpy.DataSource(limn_id=prefix + 'free_mobile_traffic_by_version_monthly',
                                          limn_name='Monthly Free Mobile Traffic by Version',
                                          data=final_monthly,
                                          limn_group=LIMN_GROUP)
@@ -375,13 +390,13 @@ def make_version_graph(carrier, version_source, basedir, daily=False):
     return version_graph
 
 
-def make_raw_graph(carrier, version_source, country_source, basedir, daily=False):
+def make_raw_graph(carrier, version_source, country_source, basedir, prefix, daily=False):
     limn_name = '%s and Total %s Wikipedia Page Requests' % (carrier.name, carrier.country)
     if daily:
         limn_name = 'Daily ' + limn_name
     else:
         limn_name = 'Monthly ' + limn_name
-    raw_graph = limnpy.Graph(slugify(limn_name), limn_name)
+    raw_graph = limnpy.Graph(slugify(prefix + limn_name), limn_name)
     raw_graph.add_metric(country_source, carrier.iso)
     raw_graph.add_metric(version_source, 'M')
     if 'Z' in list(version_source.data.columns):
@@ -415,38 +430,46 @@ def make_dashboard(carrier_counts,
                    monthly_country_source,
                    basedir,
                    carrier,
+                   prefix,
                    daily=False):
     """
     Create dashbaord file and generate carrier specific datasources and graphs
     """
     name = '%s Wikipedia Zero Dashboard' % carrier.name
-    db = limnpy.Dashboard(slugify(carrier.name, '-'), name, headline=carrier.name, subhead='Wikipedia Zero Dashboard')
+    db = limnpy.Dashboard(slugify(prefix + carrier.name, '-'),
+            name, headline=carrier.name, subhead='Wikipedia Zero Dashboard')
 
-    # make carrier-specific sourcess
+    # make carrier-specific sources and graphs
     daily_version_source, monthly_version_source = make_version_sources(
-            carrier_counts, carrier, basedir)
-    daily_percent_source, monthly_percent_source = make_percent_sources(
-            carrier, daily_country_source, monthly_country_source,
-            daily_version_source, monthly_version_source, basedir)
-
-    # make graphs and add tabs to dashboard
+            carrier_counts, carrier, basedir, prefix)
     version_graphs = [make_version_graph(carrier, monthly_version_source, basedir)]
-    raw_graphs     = [make_raw_graph(carrier, monthly_version_source, monthly_country_source, basedir)]
-    percent_graphs = [make_percent_graph(carrier, monthly_percent_source, basedir)]
-
-    # always make daily graphs
     daily_version_graph = make_version_graph(carrier, daily_version_source, basedir, daily=True)
-    daily_raw_graph     = make_raw_graph(carrier, daily_version_source, daily_country_source, basedir, daily=True)
-    daily_percent_graph = make_percent_graph(carrier, daily_percent_source, basedir, daily=True)
-
     if daily:
         version_graphs.append(daily_version_graph)
-        raw_graphs.append(daily_raw_graph)
-        percent_graphs.append(daily_percent_graph)
-
     db.add_tab('Versions', version_graphs)
-    db.add_tab('Raw', raw_graphs)
-    db.add_tab('Percent', percent_graphs)
+   
+    # this let's use make dashboards without country counts if we so please
+    if daily_country_source is not None and monthly_country_source is not None:
+        daily_percent_source, monthly_percent_source = make_percent_sources(
+                carrier, daily_country_source, monthly_country_source,
+                daily_version_source, monthly_version_source, basedir, prefix)
+
+        # make graphs and add tabs to dashboard
+        raw_graphs     = [make_raw_graph(carrier, monthly_version_source, monthly_country_source, basedir, prefix)]
+        percent_graphs = [make_percent_graph(carrier, monthly_percent_source, basedir)]
+
+        # always make daily graphs
+        daily_raw_graph     = make_raw_graph(carrier, daily_version_source, daily_country_source, basedir, prefix, daily=True)
+        daily_percent_graph = make_percent_graph(carrier, daily_percent_source, basedir, daily=True)
+
+        if daily:
+            raw_graphs.append(daily_raw_graph)
+            percent_graphs.append(daily_percent_graph)
+
+        db.add_tab('Raw', raw_graphs)
+        db.add_tab('Percent', percent_graphs)
+    else:
+        daily_percent_source = None
 
     db.write(basedir)
 
@@ -455,14 +478,16 @@ def make_dashboard(carrier_counts,
 
 
 def main(opts):
-    carrier_counts = load_counts(opts['carrier_counts'])
+    carrier_counts = load_counts(opts['carrier_counts'],
+            sep=opts['carrier_sep'], date_fmt=opts['carrier_date_fmt'])
     carrier_counts = clean_carrier_counts(carrier_counts)
-    logger.info('carrier_counts.carrier.unique():\n%s', '\n'.join(sorted(carrier_counts.carrier.unique())))
-    country_counts = load_counts(opts['country_counts'])
+    logger.info('carrier_counts.carrier.unique():\n%s', '\n'.join(map(str, sorted(carrier_counts.carrier.unique()))))
+    country_counts = load_counts(opts['country_counts'],
+            sep=opts['country_sep'], date_fmt=opts['country_date_fmt'])
 
     carrier_version_sources = {}
     carrier_percent_sources = {}
-    daily_country_source, monthly_country_source = make_country_sources(country_counts, opts['limn_basedir'])
+    daily_country_source, monthly_country_source = make_country_sources(country_counts, opts['limn_basedir'], opts['prefix'])
     # make carrier-specific dashboards
     for carrier_slug in opts['carriers']:
         carrier = Carrier(carrier_slug)
@@ -474,6 +499,7 @@ def main(opts):
                                                         monthly_country_source,
                                                         opts['limn_basedir'], 
                                                         carrier,
+                                                        prefix=opts['prefix'],
                                                         daily=opts['daily'])
         except ValueError:
             logging.exception('exception raised while constructing dashboard for %s', carrier.slug)
@@ -482,9 +508,10 @@ def main(opts):
         carrier_percent_sources[carrier] = version_percent_source
 
     # make summary graphs
-    make_summary_version_graph(carrier_version_sources, opts['limn_basedir'])
-    make_summary_percent_graph(carrier_percent_sources, opts['limn_basedir'])
-    logger.info('created dashboards:\n%s', '\n'.join(['gp.wmflabs.org/dashboards/%s' % c.slug for c in carrier_version_sources.keys()]))
+    make_summary_version_graph(carrier_version_sources, opts['limn_basedir'], prefix=opts['prefix'])
+    if daily_country_source is not None and monthly_country_source is not None:
+        make_summary_percent_graph(carrier_percent_sources, opts['limn_basedir'], prefix=opts['prefix'])
+    logger.info('created dashboards:\n%s', '\n'.join(['gp.wmflabs.org/dashboards/%s-%s' % (slugify(opts['prefix'], '-'), c.slug) for c in carrier_version_sources.keys()]))
 
 
 def parse_args():
@@ -504,6 +531,11 @@ def parse_args():
                         default='country',
                         help='directory containing hadoop output files which \
                         contain counts for each country, language, project and version')
+    parser.add_argument('--prefix', default = '', help='string to prepend to all graph and dashboard names')
+    parser.add_argument('--carrier_sep', default='\t')
+    parser.add_argument('--country_sep', default='\t')
+    parser.add_argument('--carrier_date_fmt', default=DATE_FMT)
+    parser.add_argument('--country_date_fmt', default=DATE_FMT)
     parser.add_argument('--metadata',
                         default='WP Zero Partner - Versions',
                         help='Google Drive spreadsheet title which shows the launch date for each carrier')
