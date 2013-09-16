@@ -9,7 +9,7 @@ cd ../dashboard-data
 git pull
 cd ../dashboard
 
-for source in "geowiki" "grants" "mobile" "historical" "db_size"
+for source in "geowiki" "grants" "historical" "db_size"
 do
     for type in "dashboards" "datasources" "datafiles" "graphs" "geo"
     do
